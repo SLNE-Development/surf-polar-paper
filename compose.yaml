@@ -13,6 +13,11 @@ x-rabbitmq-environment: &rabbitmq-environment
   SURF_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-surf}
   SURF_RABBITMQ_VHOST: /
 
+x-valkey-environment: &valkey-environment
+  SURF_REDIS_HOST: valkey
+  SURF_REDIS_PORT: 6379
+  SURF_REDIS_PASSWORD: ${VALKEY_PASSWORD:-surf}
+
 x-database-environment: &database-environment
   SURF_DATABASE_TYPE: POSTGRESQL
   SURF_DATABASE_HOST: postgres
@@ -23,10 +28,11 @@ x-database-environment: &database-environment
   SURF_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-surf}
 
 # Docker's default seccomp profile blocks io_uring, which Netty would otherwise pick for the RabbitMQ client.
-# The surf-rabbitmq Paper plugin shades Netty and reads the relocated property name.
+# surf-rabbitmq and surf-redis shade Netty and read relocated property names.
 x-java-tool-options: &java-tool-options >-
   -Dio.netty.transport.noNative=true
   -Ddev.slne.surf.rabbitmq.shaded.io.netty.transport.noNative=true
+  -Ddev.slne.surf.redis.shaded.io.netty.transport.noNative=true
 
 services:
   postgres:
@@ -60,6 +66,20 @@ services:
       interval: 10s
       timeout: 10s
       retries: 20
+
+  # Short-term world lock cache in front of the PostgreSQL world_lock table
+  valkey:
+    image: valkey/valkey:9.0.6-alpine
+    command: [ "valkey-server", "--requirepass", "${VALKEY_PASSWORD:-surf}" ]
+    ports:
+      - "${VALKEY_PORT:-6379}:6379"
+    healthcheck:
+      test: [ "CMD-SHELL", "valkey-cli -a \"$${VALKEY_PASSWORD:-surf}\" --no-auth-warning ping | grep -q PONG" ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    environment:
+      VALKEY_PASSWORD: ${VALKEY_PASSWORD:-surf}
 
   seaweedfs:
     image: chrislusf/seaweedfs:4.48
@@ -114,7 +134,7 @@ services:
     # Runs the shadow jar built by the startDevelopmentStack task
     command: [ "/bin/sh", "-c", "exec java -jar /app/libs/surf-polar-paper-runtime-microservice-*-all.jar" ]
     environment:
-      <<: [ *rabbitmq-environment, *database-environment ]
+      <<: [ *rabbitmq-environment, *database-environment, *valkey-environment ]
       JAVA_TOOL_OPTIONS: *java-tool-options
     volumes:
       - ./surf-polar-paper-runtime/surf-polar-paper-runtime-microservice/build/libs:/app/libs:ro
@@ -125,6 +145,8 @@ services:
       postgres:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      valkey:
         condition: service_healthy
 
   paper:
