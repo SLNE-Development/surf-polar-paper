@@ -23,3 +23,12 @@ dependencies {
 
     testImplementation("live.minehub:polarpaper:2.3.1")
 }
+
+// surf-paper-api provides these at runtime. A second bundled copy (pulled in by the AWS SDK) breaks every class
+// shared with it, e.g. kotlin.coroutines.Continuation in SuspendingJavaPlugin, with a LinkageError on load.
+configurations.runtimeClasspath {
+    exclude(group = "org.jetbrains.kotlin")
+    exclude(group = "org.jetbrains.kotlinx")
+    exclude(group = "org.jetbrains", module = "annotations")
+    exclude(group = "org.slf4j")
+}
