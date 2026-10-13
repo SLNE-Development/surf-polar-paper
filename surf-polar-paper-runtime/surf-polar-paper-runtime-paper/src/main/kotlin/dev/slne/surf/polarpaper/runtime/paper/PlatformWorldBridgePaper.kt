@@ -52,8 +52,13 @@ class PlatformWorldBridgePaper(
     override suspend fun unloadWorld(world: SurfWorld) {
         val platformWorld = getPlatformWorld<World>(world) ?: return
 
-        val unloaded = withContext(globalRegionContext()) {
+        // Already on the global region thread when called from onDisable, where no new coroutines can be dispatched
+        val unloaded = if (Bukkit.isGlobalTickThread()) {
             Bukkit.unloadWorld(platformWorld, false)
+        } else {
+            withContext(globalRegionContext()) {
+                Bukkit.unloadWorld(platformWorld, false)
+            }
         }
 
         check(unloaded) {

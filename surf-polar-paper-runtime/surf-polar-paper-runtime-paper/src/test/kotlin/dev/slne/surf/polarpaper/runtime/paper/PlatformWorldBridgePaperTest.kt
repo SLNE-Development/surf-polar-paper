@@ -42,6 +42,7 @@ class PlatformWorldBridgePaperTest {
     fun setUp() {
         mockkStatic(Bukkit::class, Polar::class)
         every { Bukkit.getWorld(any<NamespacedKey>()) } returns null
+        every { Bukkit.isGlobalTickThread() } returns false
     }
 
     @AfterEach
@@ -134,6 +135,26 @@ class PlatformWorldBridgePaperTest {
 
         assertEquals("global-region", unloadThread)
         verify(exactly = 0) { Polar.saveWorld(any(), any<PolarSource>()) }
+    }
+
+    @Test
+    fun `unloadWorld unloads directly when already on the global region during shutdown`() = runTest {
+        worldIsLoaded()
+        every { Bukkit.isGlobalTickThread() } returns true
+        var unloadThread: String? = null
+        every { Bukkit.unloadWorld(platformWorld, false) } answers {
+            unloadThread = Thread.currentThread().name
+            true
+        }
+        // The plugin's dispatchers reject new coroutines while it is being disabled
+        val disabledBridge = PlatformWorldBridgePaper(
+            globalRegionContext = { error("Plugin is being disabled") },
+            emptyPolarWorld = { emptyPolarWorld }
+        )
+
+        disabledBridge.unloadWorld(world)
+
+        assertEquals(Thread.currentThread().name, unloadThread)
     }
 
     @Test
