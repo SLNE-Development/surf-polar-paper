@@ -18,6 +18,7 @@ fun buildWorldCommand(): CommandAPICommand = CommandAPICommand("sworld").apply {
     joinWorldCommand()
     listWorldsCommand()
     loadWorldCommand()
+    reloadConfigCommand()
     unloadWorldCommand()
 }
 
