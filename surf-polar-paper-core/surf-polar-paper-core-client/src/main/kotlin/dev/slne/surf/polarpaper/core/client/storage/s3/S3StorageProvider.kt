@@ -20,6 +20,8 @@ import dev.slne.surf.polarpaper.core.client.utils.toUuidOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.*
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.Duration.Companion.seconds
 
 class S3StorageProvider(
     private val config: S3StorageConfig
@@ -42,6 +44,20 @@ class S3StorageProvider(
                     secretAccessKey = config.secretKey
                 )
             )
+
+            // Requests open new connections when pooled ones were dropped, retries ride out longer connection losses
+            retryStrategy {
+                maxAttempts = config.maxAttempts
+                delayProvider {
+                    initialDelay = RETRY_INITIAL_DELAY
+                    scaleFactor = RETRY_SCALE_FACTOR
+                    maxBackoff = RETRY_MAX_BACKOFF
+                }
+            }
+
+            httpClient {
+                connectionIdleTimeout = config.connectionIdleTimeoutSeconds.seconds
+            }
         }
 
         try {
@@ -158,6 +174,10 @@ class S3StorageProvider(
 
     internal companion object {
         private val FILE_SUFFIX = ".${WorldStorageCodec.FILE_EXTENSION}"
+
+        val RETRY_INITIAL_DELAY = 100.milliseconds
+        const val RETRY_SCALE_FACTOR = 2.0
+        val RETRY_MAX_BACKOFF = 10.seconds
 
         fun keyPrefix(gameModeIdentifier: String) = "${GameModeIdentifiers.requireValid(gameModeIdentifier)}/"
 

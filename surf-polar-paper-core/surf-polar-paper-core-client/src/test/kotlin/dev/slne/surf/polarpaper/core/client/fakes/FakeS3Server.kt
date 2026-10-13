@@ -6,6 +6,7 @@ import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
 import java.net.URLDecoder
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Minimal path-style S3 endpoint for a single bucket: HEAD bucket, PUT/GET/DELETE object and paginated ListObjectsV2.
@@ -17,8 +18,17 @@ class FakeS3Server(
     val objects = ConcurrentHashMap<String, ByteArray>()
     val contentTypes = ConcurrentHashMap<String, String>()
 
+    /** Number of upcoming requests whose connection is closed without a response, like a dropped connection. */
+    val requestsToDrop = AtomicInteger(0)
+
     private val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
         createContext("/") { exchange ->
+            if (requestsToDrop.getAndUpdate { maxOf(0, it - 1) } > 0) {
+                // Closing without sending headers aborts the connection, the client sees an unexpected end of stream
+                exchange.close()
+                return@createContext
+            }
+
             exchange.use { handle(it) }
         }
         start()

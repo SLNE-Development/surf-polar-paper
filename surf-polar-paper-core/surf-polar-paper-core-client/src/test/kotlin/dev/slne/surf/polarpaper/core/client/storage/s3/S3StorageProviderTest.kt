@@ -7,10 +7,12 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.util.*
 import kotlin.random.Random
+import kotlin.time.Duration
 
 class S3StorageProviderTest {
     private val server = FakeS3Server(bucket = "worlds", pageSize = 2)
@@ -119,5 +121,59 @@ class S3StorageProviderTest {
         assertNull(S3StorageProvider.worldUuidFromKey("survival/a/$uuid.cbor", "survival"))
         assertNull(S3StorageProvider.worldUuidFromKey("survival/$uuid.zip", "survival"))
         assertNull(S3StorageProvider.worldUuidFromKey("survival/nope.cbor", "survival"))
+    }
+
+    @Test
+    fun `requests recover from dropped connections`() = runTest {
+        provider.connect()
+        val uuid = UUID.randomUUID()
+
+        server.requestsToDrop.set(3)
+        provider.writeWorldBytes(uuid, "survival", byteArrayOf(1, 2))
+        server.requestsToDrop.set(3)
+        val loaded = provider.loadWorldBytes(uuid, "survival")
+
+        assertArrayEquals(byteArrayOf(1, 2), loaded)
+    }
+
+    @Test
+    fun `connect recovers from dropped connections`() = runTest {
+        server.requestsToDrop.set(3)
+
+        provider.connect()
+
+        assertEquals(0, server.requestsToDrop.get())
+    }
+
+    @Test
+    fun `the number of attempts limits how many dropped connections are survived`() = runTest {
+        val limitedProvider = S3StorageProvider(config("worlds").copy(maxAttempts = 2))
+        limitedProvider.connect()
+        provider.connect()
+
+        try {
+            // OkHttp retries an aborted connection once by itself, so 2 attempts reach the server up to 4 times
+            server.requestsToDrop.set(5)
+            assertThrows<Exception> { limitedProvider.writeWorldBytes(UUID.randomUUID(), "survival", byteArrayOf(1)) }
+
+            server.requestsToDrop.set(5)
+            provider.writeWorldBytes(UUID.randomUUID(), "survival", byteArrayOf(1))
+        } finally {
+            limitedProvider.disconnect()
+        }
+    }
+
+    @Test
+    fun `retries cover connection losses of about half a minute by default`() {
+        val config = config("worlds")
+        var backoff = S3StorageProvider.RETRY_INITIAL_DELAY
+        var total = Duration.ZERO
+        repeat(config.maxAttempts - 1) {
+            total += backoff
+            backoff = minOf(backoff * S3StorageProvider.RETRY_SCALE_FACTOR, S3StorageProvider.RETRY_MAX_BACKOFF)
+        }
+
+        assertEquals(10, config.maxAttempts)
+        assertTrue(total.inWholeSeconds in 25..45) { "Maximum retry time is $total" }
     }
 }
