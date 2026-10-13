@@ -151,6 +151,8 @@ services:
 
   paper:
     image: itzg/minecraft-server:2026.9.2-java25
+    # World locks are held under the hostname
+    hostname: dev-paper
     environment:
       <<: *rabbitmq-environment
       JVM_OPTS: *java-tool-options
