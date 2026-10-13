@@ -6,6 +6,7 @@ import aws.sdk.kotlin.services.s3.deleteObject
 import aws.sdk.kotlin.services.s3.listObjectsV2
 import aws.sdk.kotlin.services.s3.model.GetObjectRequest
 import aws.sdk.kotlin.services.s3.model.HeadBucketRequest
+import aws.sdk.kotlin.services.s3.model.NoSuchKey
 import aws.sdk.kotlin.services.s3.putObject
 import aws.smithy.kotlin.runtime.auth.awscredentials.Credentials
 import aws.smithy.kotlin.runtime.content.ByteStream
@@ -13,7 +14,7 @@ import aws.smithy.kotlin.runtime.content.toByteArray
 import aws.smithy.kotlin.runtime.net.url.Url
 import dev.slne.surf.polarpaper.api.world.SurfWorld
 import dev.slne.surf.polarpaper.core.client.storage.StorageProvider
-import dev.slne.surf.polarpaper.core.client.utils.ZipUtils
+import dev.slne.surf.polarpaper.core.client.utils.WorldStorageCodec
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.*
@@ -79,32 +80,34 @@ class S3StorageProvider(
         worldUuid: UUID,
         gameModeIdentifier: String
     ): String {
+        val fileName = "$worldUuid.${WorldStorageCodec.FILE_EXTENSION}"
+
         return if (gameModeIdentifier.isEmpty()) {
-            "$worldUuid.zip"
+            fileName
         } else {
-            "$gameModeIdentifier/$worldUuid.zip"
+            "$gameModeIdentifier/$fileName"
         }
     }
 
     override suspend fun loadWorldBytes(
         worldUuid: UUID,
         gameModeIdentifier: String
-    ): ByteArray {
+    ): ByteArray? {
         val client = requireClient()
         val key = objectKey(worldUuid, gameModeIdentifier)
 
-        val zippedBytes = client.getObject(
-            GetObjectRequest {
-                bucket = config.bucket
-                this.key = key
+        return try {
+            client.getObject(
+                GetObjectRequest {
+                    bucket = config.bucket
+                    this.key = key
+                }
+            ) { response ->
+                response.body?.toByteArray()
+                    ?: throw IllegalStateException("Failed to read object body for key: $key")
             }
-        ) { response ->
-            response.body?.toByteArray()
-                ?: throw IllegalStateException("Failed to read object body for key: $key")
-        }
-
-        return withContext(Dispatchers.Default) {
-            ZipUtils.unzipBytes(zippedBytes)
+        } catch (_: NoSuchKey) {
+            null
         }
     }
 
@@ -115,15 +118,12 @@ class S3StorageProvider(
     ) {
         val client = requireClient()
         val key = objectKey(worldUuid, gameModeIdentifier)
-        val zippedBytes = withContext(Dispatchers.Default) {
-            ZipUtils.zipBytes(bytes)
-        }
 
         client.putObject {
             bucket = config.bucket
             this.key = key
-            contentType = "application/zip"
-            body = ByteStream.fromBytes(zippedBytes)
+            contentType = WorldStorageCodec.CONTENT_TYPE
+            body = ByteStream.fromBytes(bytes)
         }
     }
 
@@ -162,7 +162,10 @@ class S3StorageProvider(
 
             response.contents?.forEach { s3Object ->
                 val key = s3Object.key ?: return@forEach
-                val worldUuidString = key.substringAfterLast("/").substringBeforeLast(".zip")
+                val fileName = key.substringAfterLast("/")
+                if (!fileName.endsWith(".${WorldStorageCodec.FILE_EXTENSION}")) return@forEach
+
+                val worldUuidString = fileName.substringBeforeLast(".")
                 val worldUuid = try {
                     UUID.fromString(worldUuidString)
                 } catch (e: IllegalArgumentException) {

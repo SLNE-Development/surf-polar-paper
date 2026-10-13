@@ -3,9 +3,17 @@ package dev.slne.surf.polarpaper.core.client.storage.disk
 import dev.slne.surf.polarpaper.api.world.SurfWorld
 import dev.slne.surf.polarpaper.core.client.SurfPolarPaperInstance
 import dev.slne.surf.polarpaper.core.client.storage.StorageProvider
-import dev.slne.surf.polarpaper.core.client.utils.ZipUtils
+import dev.slne.surf.polarpaper.core.client.utils.WorldStorageCodec
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import java.nio.file.StandardCopyOption
 import java.util.*
 import kotlin.io.path.createDirectories
+import kotlin.io.path.deleteIfExists
+import kotlin.io.path.exists
+import kotlin.io.path.moveTo
+import kotlin.io.path.readBytes
+import kotlin.io.path.writeBytes
 
 class DiskStorageProvider(
     private val config: DiskStorageConfig
@@ -25,36 +33,41 @@ class DiskStorageProvider(
     private fun resolvePath(
         worldUuid: UUID,
         gameModeIdentifier: String
-    ) = storageDirectory.resolve(gameModeIdentifier).resolve("$worldUuid.zip")
+    ) = storageDirectory.resolve(gameModeIdentifier).resolve("$worldUuid.${WorldStorageCodec.FILE_EXTENSION}")
 
     override suspend fun loadWorldBytes(
         worldUuid: UUID,
         gameModeIdentifier: String
-    ): ByteArray? {
-        return ZipUtils.unzipFile(resolvePath(worldUuid, gameModeIdentifier))
+    ): ByteArray? = withContext(Dispatchers.IO) {
+        val path = resolvePath(worldUuid, gameModeIdentifier)
+
+        if (path.exists()) path.readBytes() else null
     }
 
     override suspend fun writeWorldBytes(
         worldUuid: UUID,
         gameModeIdentifier: String,
         bytes: ByteArray
-    ) {
-        ZipUtils.zipFile(
-            name = worldUuid.toString(),
-            fileContent = bytes,
-            path = resolvePath(worldUuid, gameModeIdentifier)
-        )
+    ) = withContext(Dispatchers.IO) {
+        val path = resolvePath(worldUuid, gameModeIdentifier)
+        val tempPath = path.resolveSibling("${path.fileName}.tmp")
+
+        path.parent.createDirectories()
+
+        // Write to a temporary file first so a crash mid-write never leaves a corrupted world behind
+        tempPath.writeBytes(bytes)
+        tempPath.moveTo(path, StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+
+        Unit
     }
 
     override suspend fun deleteWorldBytes(
         worldUuid: UUID,
         gameModeIdentifier: String
-    ) {
-        val filePath = resolvePath(worldUuid, gameModeIdentifier)
+    ) = withContext(Dispatchers.IO) {
+        resolvePath(worldUuid, gameModeIdentifier).deleteIfExists()
 
-        if (filePath.toFile().exists()) {
-            filePath.toFile().delete()
-        }
+        Unit
     }
 
     override suspend fun listWorlds(
@@ -67,6 +80,7 @@ class DiskStorageProvider(
         }
 
         return gameModeDirectory.toFile().listFiles()
+            ?.filter { it.isFile && it.extension == WorldStorageCodec.FILE_EXTENSION }
             ?.mapNotNull { file ->
                 val fileName = file.nameWithoutExtension
                 val worldUuid = fileName.toUUIDOrNull()

@@ -7,6 +7,7 @@ import dev.slne.surf.api.core.util.toObjectSet
 import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
 import dev.slne.surf.polarpaper.api.world.SurfWorld
 import dev.slne.surf.polarpaper.core.client.storage.StorageProvider
+import dev.slne.surf.polarpaper.core.client.utils.WorldStorageCodec
 import dev.slne.surf.polarpaper.core.common.world.PlatformWorldBridge
 import dev.slne.surf.polarpaper.core.common.world.WorldCacheKey
 import dev.slne.surf.polarpaper.core.common.world.key
@@ -107,8 +108,9 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
             return cacheHit
         }
 
-        val worldBytes = storageProvider.loadWorldBytes(worldUuid, gameModeIdentifier)
+        val storedBytes = storageProvider.loadWorldBytes(worldUuid, gameModeIdentifier)
             ?: throw IllegalStateException("World with UUID $worldUuid and game mode $gameModeIdentifier does not exist")
+        val worldBytes = WorldStorageCodec.decode(storedBytes)
 
         val world = SurfWorld(worldUuid, gameModeIdentifier, worldBytes)
 
@@ -123,7 +125,11 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
     ) = withStorageProvider { storageProvider ->
         saveWorldPlatform(world)
 
-        storageProvider.writeWorldBytes(world.uuid, world.gameModeIdentifier, world.worldBytes)
+        storageProvider.writeWorldBytes(
+            world.uuid,
+            world.gameModeIdentifier,
+            WorldStorageCodec.encode(world.worldBytes)
+        )
         worldCache.put(world.key(), world)
 
         log.atInfo().log("Saved world $world")
