@@ -12,11 +12,14 @@ surfPaperPluginApi {
     }
 
     testing {
-        enabled = false
+        // MockBukkit is not published for this Paper version, Bukkit is mocked with MockK instead
+        mockBukkit = false
     }
 }
 
 dependencies {
     api(projects.surfPolarPaperCore.surfPolarPaperCoreClient)
     compileOnlyApi("live.minehub:polarpaper:2.3.1")
+
+    testImplementation("live.minehub:polarpaper:2.3.1")
 }
