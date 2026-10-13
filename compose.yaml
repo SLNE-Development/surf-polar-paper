@@ -22,8 +22,11 @@ x-database-environment: &database-environment
   SURF_DATABASE_USERNAME: ${POSTGRES_USERNAME:-surf}
   SURF_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-surf}
 
-# Docker's default seccomp profile blocks io_uring, which Netty would otherwise pick for the RabbitMQ client
-x-java-tool-options: &java-tool-options "-Dio.netty.transport.noNative=true"
+# Docker's default seccomp profile blocks io_uring, which Netty would otherwise pick for the RabbitMQ client.
+# The surf-rabbitmq Paper plugin shades Netty and reads the relocated property name.
+x-java-tool-options: &java-tool-options >-
+  -Dio.netty.transport.noNative=true
+  -Ddev.slne.surf.rabbitmq.shaded.io.netty.transport.noNative=true
 
 services:
   postgres:

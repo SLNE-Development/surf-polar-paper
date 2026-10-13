@@ -35,7 +35,9 @@ val paperRunDirectory = layout.projectDirectory.dir("surf-polar-paper-runtime/su
 val paperPluginsDirectory = paperRunDirectory.dir("plugins")
 
 // Plugins the dev server needs besides this one. They are not downloaded automatically, put them into run/plugins.
-val requiredDevelopmentPlugins = listOf("polarpaper", "surf-api-paper-server", "CommandAPI", "LuckPerms", "packetevents")
+val requiredDevelopmentPlugins = listOf(
+    "polarpaper", "surf-api-paper-server", "surf-rabbitmq-paper", "CommandAPI", "LuckPerms", "packetevents"
+)
 
 val deployDevelopmentPlugin by tasks.registering(Copy::class) {
     group = developmentStackGroup
