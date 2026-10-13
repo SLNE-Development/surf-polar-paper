@@ -17,7 +17,14 @@ surfMicroservice {
 
 dependencies {
     api(projects.surfPolarPaperCore.surfPolarPaperCoreCommon)
+    // The microservice is not a plugin, so it bundles the standalone Redis runtime instead of using a platform plugin
+    implementation("dev.slne.surf.redis:surf-redis-standalone:1.12.0")
 
     testImplementation("org.testcontainers:postgresql:1.21.3")
     testImplementation("org.testcontainers:junit-jupiter:1.21.3")
+}
+
+tasks.named<Jar>("shadowJar") {
+    // The bundled database and Redis runtimes exceed the 65535 entries of a plain zip
+    isZip64 = true
 }
