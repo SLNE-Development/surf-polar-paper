@@ -1,0 +1,159 @@
+# Local development stack: SeaweedFS (S3 + admin UI), PostgreSQL, RabbitMQ, the storage microservice
+# and a Paper dev server that runs from surf-polar-paper-runtime/surf-polar-paper-runtime-paper/run.
+#
+# Use the Gradle tasks in the "developmentStack" group to build, start, stop and clean it.
+# Every value below can be overridden in a .env file next to this one (see .env.example).
+
+name: surf-polar-paper
+
+x-rabbitmq-environment: &rabbitmq-environment
+  SURF_RABBITMQ_HOST: rabbitmq
+  SURF_RABBITMQ_PORT: 5672
+  SURF_RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:-surf}
+  SURF_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:-surf}
+  SURF_RABBITMQ_VHOST: /
+
+x-database-environment: &database-environment
+  SURF_DATABASE_TYPE: POSTGRESQL
+  SURF_DATABASE_HOST: postgres
+  SURF_DATABASE_PORT: 5432
+  SURF_DATABASE_NAME: ${POSTGRES_DATABASE:-polarpaper}
+  SURF_DATABASE_SCHEMA: public
+  SURF_DATABASE_USERNAME: ${POSTGRES_USERNAME:-surf}
+  SURF_DATABASE_PASSWORD: ${POSTGRES_PASSWORD:-surf}
+
+# Docker's default seccomp profile blocks io_uring, which Netty would otherwise pick for the RabbitMQ client
+x-java-tool-options: &java-tool-options "-Dio.netty.transport.noNative=true"
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DATABASE:-polarpaper}
+      POSTGRES_USER: ${POSTGRES_USERNAME:-surf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-surf}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:4.1.4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:-surf}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-surf}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: [ "CMD", "rabbitmq-diagnostics", "-q", "ping" ]
+      interval: 10s
+      timeout: 10s
+      retries: 20
+
+  seaweedfs:
+    image: chrislusf/seaweedfs:4.48
+    command: >-
+      server -dir=/data -ip=seaweedfs -ip.bind=0.0.0.0
+      -master.port=9333 -volume.port=8080 -filer -filer.port=8888 -s3 -s3.port=8333
+    environment:
+      # Used as the S3 admin identity because no S3 config file is provided
+      AWS_ACCESS_KEY_ID: ${S3_ACCESS_KEY:-surf}
+      AWS_SECRET_ACCESS_KEY: ${S3_SECRET_KEY:-surf-secret}
+    ports:
+      - "${S3_PORT:-8333}:8333"
+      - "${SEAWEEDFS_MASTER_PORT:-9333}:9333"
+      - "${SEAWEEDFS_FILER_PORT:-8888}:8888"
+    volumes:
+      - seaweedfs-data:/data
+    healthcheck:
+      test: [ "CMD-SHELL", "wget -q -O /dev/null http://localhost:9333/cluster/healthz && wget -q -O /dev/null http://localhost:8888/" ]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  # Creates the bucket the Paper plugin stores worlds in, then exits
+  seaweedfs-init:
+    image: chrislusf/seaweedfs:4.48
+    entrypoint: [ "/bin/sh", "-c" ]
+    command:
+      - >-
+        echo "s3.bucket.list" | weed shell -master=seaweedfs:9333 | grep -qw "${S3_BUCKET:-worlds}"
+        || echo "s3.bucket.create -name ${S3_BUCKET:-worlds}" | weed shell -master=seaweedfs:9333
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+    restart: "no"
+
+  seaweedfs-admin:
+    image: chrislusf/seaweedfs:4.48
+    command: >-
+      admin -master=seaweedfs:9333 -port=23646 -dataDir=/data
+      -adminUser=${SEAWEEDFS_ADMIN_USERNAME:-admin} -adminPassword=${SEAWEEDFS_ADMIN_PASSWORD:-admin}
+    ports:
+      - "${SEAWEEDFS_ADMIN_PORT:-23646}:23646"
+    volumes:
+      - seaweedfs-admin-data:/data
+    depends_on:
+      seaweedfs:
+        condition: service_healthy
+
+  microservice:
+    image: eclipse-temurin:25.0.4.1_1-jre-alpine
+    working_dir: /app
+    # Runs the shadow jar built by the startDevelopmentStack task
+    command: [ "/bin/sh", "-c", "exec java -jar /app/libs/surf-polar-paper-runtime-microservice-*-all.jar" ]
+    environment:
+      <<: [ *rabbitmq-environment, *database-environment ]
+      JAVA_TOOL_OPTIONS: *java-tool-options
+    volumes:
+      - ./surf-polar-paper-runtime/surf-polar-paper-runtime-microservice/build/libs:/app/libs:ro
+      - microservice-config:/app/config
+    stdin_open: true
+    tty: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  paper:
+    image: itzg/minecraft-server:2026.9.2-java25
+    environment:
+      <<: *rabbitmq-environment
+      JVM_OPTS: *java-tool-options
+      EULA: "TRUE"
+      TYPE: PAPER
+      VERSION: "26.3"
+      MEMORY: ${PAPER_MEMORY:-2G}
+      ONLINE_MODE: ${PAPER_ONLINE_MODE:-true}
+      # Lets the console be attached with "docker attach" (detach with Ctrl+P, Ctrl+Q)
+      CREATE_CONSOLE_IN_PIPE: "true"
+    ports:
+      - "${PAPER_PORT:-25565}:25565"
+    volumes:
+      # Server files, plugins and plugin configs all live in the run folder
+      - ./surf-polar-paper-runtime/surf-polar-paper-runtime-paper/run:/data
+    stdin_open: true
+    tty: true
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      seaweedfs-init:
+        condition: service_completed_successfully
+      microservice:
+        condition: service_started
+
+volumes:
+  postgres-data:
+  rabbitmq-data:
+  seaweedfs-data:
+  seaweedfs-admin-data:
+  microservice-config:
