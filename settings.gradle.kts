@@ -7,7 +7,7 @@ pluginManagement {
 
 plugins {
     id("org.gradle.toolchains.foojay-resolver-convention") version "1.0.0"
-    id("dev.slne.surf.api.gradle.settings") version "+"
+    id("dev.slne.surf.api.gradle.settings") version "2.2.1"
 }
 
 rootProject.name = "surf-polar-paper"
