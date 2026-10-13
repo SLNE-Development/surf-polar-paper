@@ -18,7 +18,7 @@ fun CommandAPICommand.deleteWorldCommand() = subcommand("delete") {
     stringArgument("gameModeIdentifier")
     uuidArgument("worldUuid")
 
-    playerExecutorSuspend { player, arguments ->
+    playerExecutorSuspend(commandScope) { player, arguments ->
         val gameModeIdentifier: String by arguments
         val worldUuid: UUID by arguments
 

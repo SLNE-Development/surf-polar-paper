@@ -45,7 +45,7 @@ fun CommandAPICommand.listWorldsCommand() = subcommand("list") {
     stringArgument("gameModeIdentifier")
     booleanArgument("showLoadedOnly", true)
 
-    playerExecutorSuspend { player, arguments ->
+    playerExecutorSuspend(commandScope) { player, arguments ->
         val gameModeIdentifier: String by arguments
         val showLoadedOnly: Boolean? by arguments
 
@@ -53,14 +53,20 @@ fun CommandAPICommand.listWorldsCommand() = subcommand("list") {
     }
 }
 
+// Same default as SurfPolarPaperApi.listWorlds
+internal suspend fun worldsToList(
+    api: SurfPolarPaperApi,
+    gameModeIdentifier: String,
+    showLoadedOnly: Boolean?
+) = api.listWorlds(gameModeIdentifier, showLoadedOnly ?: false)
+
 internal suspend fun listWorlds(
     api: SurfPolarPaperApi,
     player: Player,
     gameModeIdentifier: String,
     showLoadedOnly: Boolean?
 ) {
-    // Same default as SurfPolarPaperApi.listWorlds
-    val worlds = api.listWorlds(gameModeIdentifier, showLoadedOnly ?: false)
+    val worlds = worldsToList(api, gameModeIdentifier, showLoadedOnly)
     val pagination = paginationCache.get(gameModeIdentifier)
 
     player.sendText {

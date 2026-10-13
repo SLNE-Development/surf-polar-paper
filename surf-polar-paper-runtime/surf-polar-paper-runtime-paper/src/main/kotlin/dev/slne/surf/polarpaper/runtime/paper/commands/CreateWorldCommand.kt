@@ -17,7 +17,7 @@ fun CommandAPICommand.createWorldCommand() = subcommand("create") {
 
     stringArgument("gameModeIdentifier")
 
-    playerExecutorSuspend { player, arguments ->
+    playerExecutorSuspend(commandScope) { player, arguments ->
         val gameModeIdentifier: String by arguments
 
         createWorld(SurfPolarPaperApi.INSTANCE, player, gameModeIdentifier)

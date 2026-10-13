@@ -19,7 +19,7 @@ fun CommandAPICommand.joinWorldCommand() = subcommand("join") {
     stringArgument("gameModeIdentifier")
     uuidArgument("worldUuid")
 
-    playerExecutorSuspend { player, arguments ->
+    playerExecutorSuspend(commandScope) { player, arguments ->
         val gameModeIdentifier: String by arguments
         val worldUuid: UUID by arguments
 
