@@ -60,31 +60,6 @@ abstract class SurfPolarPaperInstance {
         storageProvider = null
     }
 
-    suspend fun reconnect() {
-        disconnect()
-        connect()
-    }
-
-    suspend fun saveConfig(
-        reconnect: Boolean = true
-    ) {
-        configManager.save()
-
-        if (reconnect) {
-            reconnect()
-        }
-    }
-
-    suspend fun reloadConfig(
-        reconnect: Boolean = true
-    ) {
-        configManager.reloadFromFile()
-
-        if (reconnect) {
-            reconnect()
-        }
-    }
-
     companion object {
         val INSTANCE get() = instance
     }

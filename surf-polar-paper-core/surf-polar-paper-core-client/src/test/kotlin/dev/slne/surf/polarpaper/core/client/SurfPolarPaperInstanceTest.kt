@@ -58,12 +58,12 @@ class SurfPolarPaperInstanceTest {
     }
 
     @Test
-    fun `reconnect replaces the storage provider`() = runTest {
+    fun `connecting again replaces the storage provider`() = runTest {
         val instance = TestInstance()
         instance.connect()
         val first = instance.storageProvider
 
-        instance.reconnect()
+        instance.connect()
 
         assertNotSame(first, instance.storageProvider)
     }
