@@ -198,6 +198,35 @@ class SurfPolarPaperApiImplTest {
     }
 
     @Test
+    fun `saveAllWorlds saves every loaded world and keeps them loaded`() = runTest {
+        val uuids = List(2) { UUID.randomUUID() }
+        uuids.forEach { store(it, "survival", byteArrayOf(1)) }
+        uuids.forEach { api.loadWorld(it, "survival") }
+        bridge.savedBytes = { byteArrayOf(5) }
+
+        api.saveAllWorlds()
+
+        uuids.forEach { assertArrayEquals(byteArrayOf(5), storedWorldBytes(it, "survival")) }
+        assertEquals(0, bridge.count("unload:"))
+        assertEquals(2, api.loadedWorlds.size)
+    }
+
+    @Test
+    fun `saveAllWorlds keeps going after a failure and reports every failure`() = runTest {
+        val uuids = List(3) { UUID.randomUUID() }
+        uuids.forEach { store(it, "survival", byteArrayOf(1)) }
+        val worlds = uuids.map { api.loadWorld(it, "survival") }
+        bridge.savedBytes = { world -> if (world == worlds[1]) error("Polar failed") else byteArrayOf(5) }
+
+        val exception = assertThrows<IllegalStateException> { api.saveAllWorlds() }
+
+        assertEquals(1, exception.suppressed.size)
+        assertArrayEquals(byteArrayOf(5), storedWorldBytes(uuids[0], "survival"))
+        assertArrayEquals(byteArrayOf(5), storedWorldBytes(uuids[2], "survival"))
+        assertArrayEquals(byteArrayOf(1), storedWorldBytes(uuids[1], "survival"))
+    }
+
+    @Test
     fun `listWorlds returns loaded worlds of the game mode as WorldInfo`() = runTest {
         val survival = UUID.randomUUID()
         val creative = UUID.randomUUID()

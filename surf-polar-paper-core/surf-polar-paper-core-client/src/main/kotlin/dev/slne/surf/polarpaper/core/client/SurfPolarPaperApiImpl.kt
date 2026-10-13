@@ -187,25 +187,40 @@ class SurfPolarPaperApiImpl internal constructor(
         beforeHook: (world: SurfWorld) -> Unit,
         afterHook: (world: SurfWorld) -> Unit
     ) {
-        val worldsToUnload = loadedWorlds.toObjectSet()
+        forEachLoadedWorld("unload") { world ->
+            beforeHook(world)
+            unloadWorld(world, saveChanges)
+            afterHook(world)
+        }
+    }
+
+    override suspend fun saveAllWorlds() {
+        forEachLoadedWorld("save") { world ->
+            saveWorld(world)
+        }
+    }
+
+    /**
+     * Runs [action] for every loaded world and keeps going when it fails for one, so a single broken world cannot block
+     * the others, e.g. during shutdown. All failures are thrown together afterwards.
+     */
+    private suspend inline fun forEachLoadedWorld(actionName: String, action: (SurfWorld) -> Unit) {
+        val worlds = loadedWorlds.toObjectSet()
         val failures = mutableListOf<Exception>()
 
-        // Keep unloading the remaining worlds when one fails, so a single broken world cannot block shutdown
-        for (world in worldsToUnload) {
+        for (world in worlds) {
             try {
-                beforeHook(world)
-                unloadWorld(world, saveChanges)
-                afterHook(world)
+                action(world)
             } catch (exception: CancellationException) {
                 throw exception
             } catch (exception: Exception) {
-                log.atSevere().withCause(exception).log("Failed to unload world $world")
+                log.atSevere().withCause(exception).log("Failed to $actionName world $world")
                 failures += exception
             }
         }
 
         if (failures.isNotEmpty()) {
-            throw IllegalStateException("Failed to unload ${failures.size} of ${worldsToUnload.size} worlds").apply {
+            throw IllegalStateException("Failed to $actionName ${failures.size} of ${worlds.size} worlds").apply {
                 failures.forEach(::addSuppressed)
             }
         }

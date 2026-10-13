@@ -38,7 +38,9 @@ abstract class SurfPolarPaperInstance {
     @OverridingMethodsMustInvokeSuper
     open suspend fun onDisable() {
         try {
-            api.unloadAllWorlds()
+            // Only save: the server discards its worlds when it stops, and worlds with players in them cannot be
+            // unloaded at this point because players are disconnected after plugins are disabled
+            api.saveAllWorlds()
         } finally {
             disconnect()
         }

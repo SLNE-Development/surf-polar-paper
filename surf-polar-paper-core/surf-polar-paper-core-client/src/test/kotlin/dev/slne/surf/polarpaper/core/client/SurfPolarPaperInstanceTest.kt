@@ -92,21 +92,22 @@ class SurfPolarPaperInstanceTest {
     }
 
     @Test
-    fun `onDisable unloads all worlds and disconnects`() = runTest {
+    fun `onDisable saves all worlds without unloading them and disconnects`() = runTest {
         val instance = TestInstance()
         instance.connect()
 
         instance.onDisable()
 
-        coVerify(exactly = 1) { api.unloadAllWorlds(any(), any(), any()) }
+        coVerify(exactly = 1) { api.saveAllWorlds() }
+        coVerify(exactly = 0) { api.unloadAllWorlds(any(), any(), any()) }
         assertNull(instance.storageProvider)
     }
 
     @Test
-    fun `onDisable disconnects even when unloading fails`() = runTest {
+    fun `onDisable disconnects even when saving fails`() = runTest {
         val instance = TestInstance()
         instance.connect()
-        coEvery { api.unloadAllWorlds(any(), any(), any()) } throws IllegalStateException("Failed to unload 1 of 2 worlds")
+        coEvery { api.saveAllWorlds() } throws IllegalStateException("Failed to save 1 of 2 worlds")
 
         assertThrows<IllegalStateException> { instance.onDisable() }
 

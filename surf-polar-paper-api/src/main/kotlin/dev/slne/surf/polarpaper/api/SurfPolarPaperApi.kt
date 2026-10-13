@@ -30,6 +30,12 @@ interface SurfPolarPaperApi {
 
     suspend fun saveWorld(world: SurfWorld)
 
+    /**
+     * Saves every loaded world and keeps them loaded. Failures do not stop the remaining worlds from being saved,
+     * they are thrown together afterwards.
+     */
+    suspend fun saveAllWorlds()
+
     suspend fun unloadWorld(
         world: SurfWorld,
         saveChanges: Boolean = true
