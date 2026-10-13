@@ -11,44 +11,59 @@ import dev.slne.surf.api.core.messages.adventure.sendText
 import dev.slne.surf.api.core.messages.pagination.Pagination
 import dev.slne.surf.api.paper.command.executors.playerExecutorSuspend
 import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
-import dev.slne.surf.polarpaper.api.world.SurfWorld
+import dev.slne.surf.polarpaper.api.world.WorldInfo
+import org.bukkit.entity.Player
 
 private val paginationCache = Caffeine.newBuilder()
     .maximumSize(1000)
-    .build<String, Pagination<SurfWorld>> { gameModeIdentifier ->
+    .build<String, Pagination<WorldInfo>> { gameModeIdentifier ->
         Pagination {
             title {
                 info("Worlds List - $gameModeIdentifier")
             }
 
             resultsPerPage = 5
-            rowRenderer { world, i ->
+            rowRenderer { world, _ ->
                 listOf(buildText {
                     append(world)
                     appendSpace()
 
                     append {
                         variableValue("[JOIN]")
-                        clickRunsCommand("/sworld join ${world.gameModeIdentifier} ${world.uuid}")
+                        clickRunsCommand(joinCommandFor(world))
                     }
                 })
             }
         }
     }
 
+internal fun joinCommandFor(world: WorldInfo) = "/sworld join ${world.gameModeIdentifier} ${world.uuid}"
+
 fun CommandAPICommand.listWorldsCommand() = subcommand("list") {
+    withPermission(WORLD_PERMISSION)
+
     stringArgument("gameModeIdentifier")
     booleanArgument("showLoadedOnly", true)
 
     playerExecutorSuspend { player, arguments ->
         val gameModeIdentifier: String by arguments
-        val pagination = paginationCache.get(gameModeIdentifier)
-
         val showLoadedOnly: Boolean? by arguments
-        val worlds = SurfPolarPaperApi.listWorlds(gameModeIdentifier, showLoadedOnly ?: true)
 
-        player.sendText {
-            append(pagination.renderComponent(worlds))
-        }
+        listWorlds(SurfPolarPaperApi.INSTANCE, player, gameModeIdentifier, showLoadedOnly)
+    }
+}
+
+internal suspend fun listWorlds(
+    api: SurfPolarPaperApi,
+    player: Player,
+    gameModeIdentifier: String,
+    showLoadedOnly: Boolean?
+) {
+    // Same default as SurfPolarPaperApi.listWorlds
+    val worlds = api.listWorlds(gameModeIdentifier, showLoadedOnly ?: false)
+    val pagination = paginationCache.get(gameModeIdentifier)
+
+    player.sendText {
+        append(pagination.renderComponent(worlds))
     }
 }

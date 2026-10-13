@@ -1,39 +1,60 @@
 package dev.slne.surf.polarpaper.core.client.storage.disk
 
-import dev.slne.surf.polarpaper.api.world.SurfWorld
-import dev.slne.surf.polarpaper.core.client.SurfPolarPaperInstance
+import dev.slne.surf.polarpaper.api.world.GameModeIdentifiers
+import dev.slne.surf.polarpaper.api.world.WorldInfo
 import dev.slne.surf.polarpaper.core.client.storage.StorageProvider
 import dev.slne.surf.polarpaper.core.client.utils.WorldStorageCodec
+import dev.slne.surf.polarpaper.core.client.utils.toUuidOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.util.*
 import kotlin.io.path.createDirectories
 import kotlin.io.path.deleteIfExists
 import kotlin.io.path.exists
+import kotlin.io.path.extension
+import kotlin.io.path.isDirectory
+import kotlin.io.path.isRegularFile
+import kotlin.io.path.listDirectoryEntries
 import kotlin.io.path.moveTo
+import kotlin.io.path.nameWithoutExtension
 import kotlin.io.path.readBytes
 import kotlin.io.path.writeBytes
 
 class DiskStorageProvider(
-    private val config: DiskStorageConfig
+    private val config: DiskStorageConfig,
+    dataPath: Path
 ) : StorageProvider {
-    private val storageDirectory
-        get() = SurfPolarPaperInstance.INSTANCE.dataPath
-            .resolve(config.path)
+    private val storageDirectory = dataPath.resolve(config.path).toAbsolutePath().normalize()
 
     override suspend fun connect() {
-        storageDirectory.createDirectories()
+        withContext(Dispatchers.IO) {
+            storageDirectory.createDirectories()
+        }
     }
 
     override suspend fun disconnect() {
         // No disconnection needed for disk storage
     }
 
+    private fun resolveGameModeDirectory(gameModeIdentifier: String): Path {
+        GameModeIdentifiers.requireValid(gameModeIdentifier)
+
+        val directory = storageDirectory.resolve(gameModeIdentifier).normalize()
+
+        // Defense in depth, the identifier validation already rules out path separators and '..'
+        check(directory.parent == storageDirectory) {
+            "Game mode directory $directory escapes the storage directory $storageDirectory"
+        }
+
+        return directory
+    }
+
     private fun resolvePath(
         worldUuid: UUID,
         gameModeIdentifier: String
-    ) = storageDirectory.resolve(gameModeIdentifier).resolve("$worldUuid.${WorldStorageCodec.FILE_EXTENSION}")
+    ) = resolveGameModeDirectory(gameModeIdentifier).resolve("$worldUuid.${WorldStorageCodec.FILE_EXTENSION}")
 
     override suspend fun loadWorldBytes(
         worldUuid: UUID,
@@ -72,36 +93,19 @@ class DiskStorageProvider(
 
     override suspend fun listWorlds(
         gameModeIdentifier: String
-    ): List<SurfWorld> {
-        val gameModeDirectory = storageDirectory.resolve(gameModeIdentifier)
+    ): List<WorldInfo> = withContext(Dispatchers.IO) {
+        val gameModeDirectory = resolveGameModeDirectory(gameModeIdentifier)
 
-        if (!gameModeDirectory.toFile().exists()) {
-            return emptyList()
+        if (!gameModeDirectory.isDirectory()) {
+            return@withContext emptyList()
         }
 
-        return gameModeDirectory.toFile().listFiles()
-            ?.filter { it.isFile && it.extension == WorldStorageCodec.FILE_EXTENSION }
-            ?.mapNotNull { file ->
-                val fileName = file.nameWithoutExtension
-                val worldUuid = fileName.toUUIDOrNull()
-
-                if (worldUuid != null) {
-                    SurfWorld(
-                        uuid = worldUuid,
-                        gameModeIdentifier = gameModeIdentifier,
-                        worldBytes = ByteArray(0) // Placeholder, actual bytes can be loaded later
-                    )
-                } else {
-                    null
+        gameModeDirectory.listDirectoryEntries("*.${WorldStorageCodec.FILE_EXTENSION}")
+            .filter { it.isRegularFile() && it.extension == WorldStorageCodec.FILE_EXTENSION }
+            .mapNotNull { file ->
+                file.nameWithoutExtension.toUuidOrNull()?.let { worldUuid ->
+                    WorldInfo(worldUuid, gameModeIdentifier)
                 }
-            } ?: emptyList()
-    }
-
-    private fun String.toUUIDOrNull(): UUID? {
-        return try {
-            UUID.fromString(this)
-        } catch (e: IllegalArgumentException) {
-            null
-        }
+            }
     }
 }

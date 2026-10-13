@@ -2,6 +2,7 @@ package dev.slne.surf.polarpaper.api
 
 import dev.slne.surf.api.core.util.requiredService
 import dev.slne.surf.polarpaper.api.world.SurfWorld
+import dev.slne.surf.polarpaper.api.world.WorldInfo
 import it.unimi.dsi.fastutil.objects.ObjectSet
 import org.jetbrains.annotations.UnmodifiableView
 import java.util.*
@@ -14,7 +15,7 @@ interface SurfPolarPaperApi {
     suspend fun listWorlds(
         gameModeIdentifier: String,
         showLoadedOnly: Boolean = false
-    ): List<SurfWorld>
+    ): List<WorldInfo>
 
     suspend fun createWorld(
         worldUuid: UUID,

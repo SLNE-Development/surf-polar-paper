@@ -1,23 +1,29 @@
 package dev.slne.surf.polarpaper.core.client.storage.database
 
-import dev.slne.surf.polarpaper.api.world.SurfWorld
-import dev.slne.surf.polarpaper.core.client.SurfPolarPaperInstance
+import dev.slne.surf.polarpaper.api.world.WorldInfo
 import dev.slne.surf.polarpaper.core.client.storage.StorageProvider
 import dev.slne.surf.polarpaper.core.common.storage.database.DatabaseStorageService
 import dev.slne.surf.rabbitmq.api.ClientRabbitMQApi
+import java.nio.file.Path
 import java.util.*
 
-class DatabaseStorageProvider(
-    private val config: DatabaseStorageConfig
+class DatabaseStorageProvider internal constructor(
+    private val rabbitApi: ClientRabbitMQApi,
+    proxySupplier: () -> DatabaseStorageService
 ) : StorageProvider {
-    private val rabbitApi = ClientRabbitMQApi.create(
-        pluginName = "surf-polar-paper-storage",
-        path = SurfPolarPaperInstance.INSTANCE.dataPath
+    constructor(dataPath: Path) : this(
+        ClientRabbitMQApi.create(
+            pluginName = "surf-polar-paper-storage",
+            path = dataPath
+        )
     )
 
-    private val proxy by lazy {
-        rabbitApi.createRpcService<DatabaseStorageService>()
-    }
+    private constructor(rabbitApi: ClientRabbitMQApi) : this(
+        rabbitApi = rabbitApi,
+        proxySupplier = { rabbitApi.createRpcService<DatabaseStorageService>() }
+    )
+
+    private val proxy by lazy(proxySupplier)
 
     override suspend fun connect() {
         rabbitApi.freezeAndConnect()
@@ -61,7 +67,7 @@ class DatabaseStorageProvider(
 
     override suspend fun listWorlds(
         gameModeIdentifier: String
-    ): List<SurfWorld> {
+    ): List<WorldInfo> {
         return proxy.listWorlds(gameModeIdentifier)
     }
 }

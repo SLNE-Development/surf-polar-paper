@@ -12,9 +12,11 @@ import aws.smithy.kotlin.runtime.auth.awscredentials.Credentials
 import aws.smithy.kotlin.runtime.content.ByteStream
 import aws.smithy.kotlin.runtime.content.toByteArray
 import aws.smithy.kotlin.runtime.net.url.Url
-import dev.slne.surf.polarpaper.api.world.SurfWorld
+import dev.slne.surf.polarpaper.api.world.GameModeIdentifiers
+import dev.slne.surf.polarpaper.api.world.WorldInfo
 import dev.slne.surf.polarpaper.core.client.storage.StorageProvider
 import dev.slne.surf.polarpaper.core.client.utils.WorldStorageCodec
+import dev.slne.surf.polarpaper.core.client.utils.toUuidOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.util.*
@@ -22,14 +24,14 @@ import java.util.*
 class S3StorageProvider(
     private val config: S3StorageConfig
 ) : StorageProvider {
-    private lateinit var client: S3Client
+    private var client: S3Client? = null
 
     override suspend fun connect() {
-        if (::client.isInitialized) {
+        if (client != null) {
             return
         }
 
-        client = S3Client {
+        val client = S3Client {
             endpointUrl = Url.parse(config.endpoint)
             region = config.region
             forcePathStyle = true
@@ -58,35 +60,21 @@ class S3StorageProvider(
                 exception
             )
         }
+
+        this.client = client
     }
 
     override suspend fun disconnect() {
-        if (::client.isInitialized) {
-            withContext(Dispatchers.IO) {
-                client.close()
-            }
+        val client = client ?: return
+        this.client = null
+
+        withContext(Dispatchers.IO) {
+            client.close()
         }
     }
 
     private fun requireClient(): S3Client {
-        if (!::client.isInitialized) {
-            throw IllegalStateException("S3 client is not initialized. Call connect() first.")
-        }
-
-        return client
-    }
-
-    private fun objectKey(
-        worldUuid: UUID,
-        gameModeIdentifier: String
-    ): String {
-        val fileName = "$worldUuid.${WorldStorageCodec.FILE_EXTENSION}"
-
-        return if (gameModeIdentifier.isEmpty()) {
-            fileName
-        } else {
-            "$gameModeIdentifier/$fileName"
-        }
+        return client ?: throw IllegalStateException("S3 client is not initialized. Call connect() first.")
     }
 
     override suspend fun loadWorldBytes(
@@ -142,15 +130,11 @@ class S3StorageProvider(
 
     override suspend fun listWorlds(
         gameModeIdentifier: String
-    ): List<SurfWorld> {
+    ): List<WorldInfo> {
         val client = requireClient()
-        val prefix = if (gameModeIdentifier.isEmpty()) {
-            ""
-        } else {
-            "$gameModeIdentifier/"
-        }
+        val prefix = keyPrefix(gameModeIdentifier)
 
-        val worlds = mutableListOf<SurfWorld>()
+        val worlds = mutableListOf<WorldInfo>()
         var continuationToken: String? = null
 
         do {
@@ -161,29 +145,38 @@ class S3StorageProvider(
             }
 
             response.contents?.forEach { s3Object ->
-                val key = s3Object.key ?: return@forEach
-                val fileName = key.substringAfterLast("/")
-                if (!fileName.endsWith(".${WorldStorageCodec.FILE_EXTENSION}")) return@forEach
+                val worldUuid = s3Object.key?.let { worldUuidFromKey(it, gameModeIdentifier) } ?: return@forEach
 
-                val worldUuidString = fileName.substringBeforeLast(".")
-                val worldUuid = try {
-                    UUID.fromString(worldUuidString)
-                } catch (e: IllegalArgumentException) {
-                    return@forEach
-                }
-
-                worlds.add(
-                    SurfWorld(
-                        uuid = worldUuid,
-                        gameModeIdentifier = gameModeIdentifier,
-                        worldBytes = ByteArray(0) // Placeholder, actual bytes can be loaded later
-                    )
-                )
+                worlds.add(WorldInfo(worldUuid, gameModeIdentifier))
             }
 
             continuationToken = response.nextContinuationToken
         } while (continuationToken != null)
 
         return worlds
+    }
+
+    internal companion object {
+        private val FILE_SUFFIX = ".${WorldStorageCodec.FILE_EXTENSION}"
+
+        fun keyPrefix(gameModeIdentifier: String) = "${GameModeIdentifiers.requireValid(gameModeIdentifier)}/"
+
+        fun objectKey(
+            worldUuid: UUID,
+            gameModeIdentifier: String
+        ) = "${keyPrefix(gameModeIdentifier)}$worldUuid$FILE_SUFFIX"
+
+        /**
+         * Returns the world UUID of an object key directly inside the game mode prefix, or `null` for any other key.
+         */
+        fun worldUuidFromKey(key: String, gameModeIdentifier: String): UUID? {
+            val fileName = key.removePrefix(keyPrefix(gameModeIdentifier))
+
+            if (fileName == key || '/' in fileName || !fileName.endsWith(FILE_SUFFIX)) {
+                return null
+            }
+
+            return fileName.removeSuffix(FILE_SUFFIX).toUuidOrNull()
+        }
     }
 }

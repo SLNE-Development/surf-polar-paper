@@ -1,35 +1,46 @@
 package dev.slne.surf.polarpaper.runtime.paper.commands
 
-import dev.jorel.commandapi.CommandAPI
 import dev.jorel.commandapi.CommandAPICommand
 import dev.jorel.commandapi.kotlindsl.getValue
 import dev.jorel.commandapi.kotlindsl.stringArgument
 import dev.jorel.commandapi.kotlindsl.subcommand
+import dev.jorel.commandapi.kotlindsl.uuidArgument
 import dev.slne.surf.api.core.messages.adventure.sendText
 import dev.slne.surf.api.paper.command.executors.playerExecutorSuspend
 import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
+import dev.slne.surf.polarpaper.api.world.SurfWorld
+import org.bukkit.entity.Player
 import java.util.*
 
 fun CommandAPICommand.deleteWorldCommand() = subcommand("delete") {
     withPermission(WORLD_PERMISSION)
-    
+
     stringArgument("gameModeIdentifier")
-    stringArgument("worldUuid")
+    uuidArgument("worldUuid")
 
     playerExecutorSuspend { player, arguments ->
         val gameModeIdentifier: String by arguments
-        val worldUuid: String by arguments
-        val uuid = UUID.fromString(worldUuid)
+        val worldUuid: UUID by arguments
 
-        val world = SurfPolarPaperApi.findWorld(uuid, gameModeIdentifier)
-            ?: throw CommandAPI.failWithString("World with UUID '$worldUuid' and game mode '$gameModeIdentifier' not found.")
+        deleteWorld(SurfPolarPaperApi.INSTANCE, player, worldUuid, gameModeIdentifier)
+    }
+}
 
-        SurfPolarPaperApi.deleteWorld(world)
+internal suspend fun deleteWorld(
+    api: SurfPolarPaperApi,
+    player: Player,
+    worldUuid: UUID,
+    gameModeIdentifier: String
+) {
+    // Worlds that are not loaded can be deleted too, their bytes are not needed for that
+    val world = api.findWorld(worldUuid, gameModeIdentifier)
+        ?: SurfWorld(worldUuid, gameModeIdentifier, ByteArray(0))
 
-        player.sendText {
-            success("World ")
-            append(world)
-            success(" deleted successfully.")
-        }
+    api.deleteWorld(world)
+
+    player.sendText {
+        success("World ")
+        append(world)
+        success(" deleted successfully.")
     }
 }

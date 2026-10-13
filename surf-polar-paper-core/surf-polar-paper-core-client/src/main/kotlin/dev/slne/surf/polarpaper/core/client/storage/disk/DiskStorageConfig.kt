@@ -7,5 +7,5 @@ import org.spongepowered.configurate.objectmapping.meta.Comment
 @ConfigSerializable
 data class DiskStorageConfig(
     @Comment("The path to the directory where files will be stored relative to the plugin root.")
-    val path: String
+    val path: String = "worlds"
 ) : StorageConfigurable

@@ -5,32 +5,45 @@ import com.google.auto.service.AutoService
 import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.api.core.util.toObjectSet
 import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
+import dev.slne.surf.polarpaper.api.world.GameModeIdentifiers
 import dev.slne.surf.polarpaper.api.world.SurfWorld
+import dev.slne.surf.polarpaper.api.world.WorldInfo
 import dev.slne.surf.polarpaper.core.client.storage.StorageProvider
 import dev.slne.surf.polarpaper.core.client.utils.WorldStorageCodec
 import dev.slne.surf.polarpaper.core.common.world.PlatformWorldBridge
 import dev.slne.surf.polarpaper.core.common.world.WorldCacheKey
 import dev.slne.surf.polarpaper.core.common.world.key
 import it.unimi.dsi.fastutil.objects.ObjectSet
+import kotlinx.coroutines.CancellationException
 import org.jetbrains.annotations.UnmodifiableView
 import java.util.*
 
 @AutoService(SurfPolarPaperApi::class)
-class SurfPolarPaperApiImpl : SurfPolarPaperApi {
+class SurfPolarPaperApiImpl internal constructor(
+    private val storageProviderSupplier: () -> StorageProvider?,
+    private val platformBridgeSupplier: () -> PlatformWorldBridge
+) : SurfPolarPaperApi {
+    constructor() : this(
+        storageProviderSupplier = { SurfPolarPaperInstance.INSTANCE.storageProvider },
+        platformBridgeSupplier = { PlatformWorldBridge.INSTANCE }
+    )
+
     private val log = logger()
 
     private val worldCache = Caffeine.newBuilder()
         .build<WorldCacheKey, SurfWorld>()
 
+    private val platformBridge get() = platformBridgeSupplier()
+
     override val loadedWorlds: @UnmodifiableView ObjectSet<SurfWorld>
         get() = worldCache.asMap().values.toObjectSet()
 
-    private fun ensureStorageProvider() = SurfPolarPaperInstance.INSTANCE.storageProvider
+    private fun ensureStorageProvider() = storageProviderSupplier()
         ?: throw IllegalStateException("Storage provider is not initialized")
 
     private suspend fun createWorldPlatform(world: SurfWorld) {
         try {
-            PlatformWorldBridge.createWorld(world)
+            platformBridge.createWorld(world)
         } catch (exception: Exception) {
             throw IllegalStateException(
                 "Failed to create platform world $world",
@@ -41,7 +54,7 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
 
     private suspend fun loadWorldPlatform(world: SurfWorld) {
         try {
-            PlatformWorldBridge.loadWorld(world)
+            platformBridge.loadWorld(world)
         } catch (exception: Exception) {
             throw IllegalStateException(
                 "Failed to load platform world $world",
@@ -52,7 +65,7 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
 
     private suspend fun saveWorldPlatform(world: SurfWorld) {
         try {
-            PlatformWorldBridge.saveWorld(world)
+            platformBridge.saveWorld(world)
         } catch (exception: Exception) {
             throw IllegalStateException(
                 "Failed to save platform world $world",
@@ -63,7 +76,7 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
 
     private suspend fun unloadWorldPlatform(world: SurfWorld) {
         try {
-            PlatformWorldBridge.unloadWorld(world)
+            platformBridge.unloadWorld(world)
         } catch (exception: Exception) {
             throw IllegalStateException(
                 "Failed to unload platform world $world",
@@ -73,7 +86,7 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
     }
 
     override fun <W> getPlatformWorld(world: SurfWorld): W? {
-        return PlatformWorldBridge.getPlatformWorld(world)
+        return platformBridge.getPlatformWorld(world)
     }
 
     private inline fun <T> withStorageProvider(action: (storageProvider: StorageProvider) -> T): T {
@@ -87,6 +100,8 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
         gameModeIdentifier: String,
         worldBytes: ByteArray
     ): SurfWorld {
+        GameModeIdentifiers.requireValid(gameModeIdentifier)
+
         val world = SurfWorld(worldUuid, gameModeIdentifier, worldBytes)
 
         createWorldPlatform(world)
@@ -101,6 +116,8 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
         worldUuid: UUID,
         gameModeIdentifier: String
     ): SurfWorld = withStorageProvider { storageProvider ->
+        GameModeIdentifiers.requireValid(gameModeIdentifier)
+
         val key = WorldCacheKey(worldUuid, gameModeIdentifier)
         val cacheHit = worldCache.getIfPresent(key)
 
@@ -115,6 +132,8 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
         val world = SurfWorld(worldUuid, gameModeIdentifier, worldBytes)
 
         loadWorldPlatform(world)
+        worldCache.put(key, world)
+
         log.atInfo().log("Loaded world $world")
 
         return world
@@ -123,6 +142,8 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
     override suspend fun saveWorld(
         world: SurfWorld
     ) = withStorageProvider { storageProvider ->
+        GameModeIdentifiers.requireValid(world.gameModeIdentifier)
+
         saveWorldPlatform(world)
 
         storageProvider.writeWorldBytes(
@@ -152,6 +173,8 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
     override suspend fun deleteWorld(
         world: SurfWorld
     ) = withStorageProvider { storageProvider ->
+        GameModeIdentifiers.requireValid(world.gameModeIdentifier)
+
         unloadWorld(world, saveChanges = false)
 
         storageProvider.deleteWorldBytes(world.uuid, world.gameModeIdentifier)
@@ -165,11 +188,26 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
         afterHook: (world: SurfWorld) -> Unit
     ) {
         val worldsToUnload = loadedWorlds.toObjectSet()
+        val failures = mutableListOf<Exception>()
 
+        // Keep unloading the remaining worlds when one fails, so a single broken world cannot block shutdown
         for (world in worldsToUnload) {
-            beforeHook(world)
-            unloadWorld(world, saveChanges)
-            afterHook(world)
+            try {
+                beforeHook(world)
+                unloadWorld(world, saveChanges)
+                afterHook(world)
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                log.atSevere().withCause(exception).log("Failed to unload world $world")
+                failures += exception
+            }
+        }
+
+        if (failures.isNotEmpty()) {
+            throw IllegalStateException("Failed to unload ${failures.size} of ${worldsToUnload.size} worlds").apply {
+                failures.forEach(::addSuppressed)
+            }
         }
     }
 
@@ -182,9 +220,13 @@ class SurfPolarPaperApiImpl : SurfPolarPaperApi {
     override suspend fun listWorlds(
         gameModeIdentifier: String,
         showLoadedOnly: Boolean
-    ): List<SurfWorld> {
+    ): List<WorldInfo> {
+        GameModeIdentifiers.requireValid(gameModeIdentifier)
+
         return if (showLoadedOnly) {
-            loadedWorlds.filter { it.gameModeIdentifier == gameModeIdentifier }
+            loadedWorlds
+                .filter { it.gameModeIdentifier == gameModeIdentifier }
+                .map { it.info() }
         } else {
             withStorageProvider { storageProvider ->
                 storageProvider.listWorlds(gameModeIdentifier)
