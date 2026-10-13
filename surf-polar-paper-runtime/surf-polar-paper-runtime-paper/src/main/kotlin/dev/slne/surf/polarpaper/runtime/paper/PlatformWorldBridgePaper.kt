@@ -8,6 +8,7 @@ import kotlinx.coroutines.future.await
 import kotlinx.coroutines.withContext
 import live.minehub.polarpaper.Polar
 import live.minehub.polarpaper.core.source.BytesPolarSource
+import live.minehub.polarpaper.core.world.PolarWorld
 import org.bukkit.Bukkit
 import org.bukkit.World
 import kotlin.coroutines.CoroutineContext
@@ -15,7 +16,8 @@ import kotlin.coroutines.CoroutineContext
 @AutoService(PlatformWorldBridge::class)
 class PlatformWorldBridgePaper(
     // World unloading must happen on the global region thread (the main thread on Paper)
-    private val globalRegionContext: () -> CoroutineContext = { plugin.globalRegionDispatcher }
+    private val globalRegionContext: () -> CoroutineContext = { plugin.globalRegionDispatcher },
+    private val emptyPolarWorld: () -> PolarWorld = { PolarWorld(EMPTY_WORLD_MIN_SECTION, EMPTY_WORLD_MAX_SECTION) }
 ) : PlatformWorldBridge {
     override suspend fun createWorld(world: SurfWorld) {
         loadWorld(world)
@@ -26,9 +28,14 @@ class PlatformWorldBridgePaper(
             return
         }
 
-        val source = BytesPolarSource(world.worldBytes)
+        val platformWorld = if (world.worldBytes.isEmpty()) {
+            // A new world has no Polar data yet, which Polar cannot read, so start from an empty world instead
+            Polar.createWorld(emptyPolarWorld(), world.name)
+        } else {
+            Polar.createWorld(BytesPolarSource(world.worldBytes), world.name)
+        }
 
-        Polar.createWorld(source, world.name).await()
+        platformWorld.await()
             ?: throw IllegalStateException("Polar failed to create platform world for $world")
     }
 
@@ -56,5 +63,11 @@ class PlatformWorldBridgePaper(
     @Suppress("UNCHECKED_CAST")
     override fun <W> getPlatformWorld(world: SurfWorld): W? {
         return Bukkit.getWorld(world.name) as? W
+    }
+
+    companion object {
+        // Overworld height, Y -64 to 319
+        const val EMPTY_WORLD_MIN_SECTION: Byte = -4
+        const val EMPTY_WORLD_MAX_SECTION: Byte = 19
     }
 }

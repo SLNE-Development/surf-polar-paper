@@ -11,6 +11,7 @@ import kotlinx.coroutines.test.runTest
 import live.minehub.polarpaper.Polar
 import live.minehub.polarpaper.core.source.BytesPolarSource
 import live.minehub.polarpaper.core.source.PolarSource
+import live.minehub.polarpaper.core.world.PolarWorld
 import org.bukkit.Bukkit
 import org.bukkit.World
 import org.junit.jupiter.api.AfterEach
@@ -26,7 +27,12 @@ import java.util.concurrent.Executors
 
 class PlatformWorldBridgePaperTest {
     private val globalRegionExecutor = Executors.newSingleThreadExecutor { Thread(it, "global-region") }
-    private val bridge = PlatformWorldBridgePaper { globalRegionExecutor.asCoroutineDispatcher() }
+    // A real PolarWorld needs Minecraft's server classes
+    private val emptyPolarWorld = mockk<PolarWorld>()
+    private val bridge = PlatformWorldBridgePaper(
+        globalRegionContext = { globalRegionExecutor.asCoroutineDispatcher() },
+        emptyPolarWorld = { emptyPolarWorld }
+    )
 
     private val world = SurfWorld(UUID.randomUUID(), "survival", byteArrayOf(1, 2, 3))
     private val platformWorld = mockk<World>()
@@ -58,6 +64,17 @@ class PlatformWorldBridgePaperTest {
         bridge.loadWorld(world)
 
         assertArrayEquals(byteArrayOf(1, 2, 3), loadedBytes)
+    }
+
+    @Test
+    fun `a world without bytes starts as an empty polar world`() = runTest {
+        val newWorld = SurfWorld(UUID.randomUUID(), "survival", ByteArray(0))
+        every { Polar.createWorld(emptyPolarWorld, newWorld.name) } returns CompletableFuture.completedFuture(platformWorld)
+
+        bridge.loadWorld(newWorld)
+
+        verify(exactly = 1) { Polar.createWorld(emptyPolarWorld, newWorld.name) }
+        verify(exactly = 0) { Polar.createWorld(any<PolarSource>(), any<String>()) }
     }
 
     @Test
