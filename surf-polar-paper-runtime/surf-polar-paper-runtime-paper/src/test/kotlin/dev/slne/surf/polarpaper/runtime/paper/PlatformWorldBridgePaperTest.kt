@@ -13,6 +13,7 @@ import live.minehub.polarpaper.core.source.BytesPolarSource
 import live.minehub.polarpaper.core.source.PolarSource
 import live.minehub.polarpaper.core.world.PolarWorld
 import org.bukkit.Bukkit
+import org.bukkit.NamespacedKey
 import org.bukkit.World
 import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.assertArrayEquals
@@ -40,7 +41,7 @@ class PlatformWorldBridgePaperTest {
     @BeforeEach
     fun setUp() {
         mockkStatic(Bukkit::class, Polar::class)
-        every { Bukkit.getWorld(any<String>()) } returns null
+        every { Bukkit.getWorld(any<NamespacedKey>()) } returns null
     }
 
     @AfterEach
@@ -50,7 +51,7 @@ class PlatformWorldBridgePaperTest {
     }
 
     private fun worldIsLoaded() {
-        every { Bukkit.getWorld(world.name) } returns platformWorld
+        every { Bukkit.getWorld(PlatformWorldBridgePaper.worldKey(world)) } returns platformWorld
     }
 
     @Test
@@ -151,9 +152,15 @@ class PlatformWorldBridgePaperTest {
     }
 
     @Test
-    fun `getPlatformWorld looks the world up by name`() {
+    fun `getPlatformWorld looks the world up by its polar key`() {
         worldIsLoaded()
 
         assertSame(platformWorld, bridge.getPlatformWorld<World>(world))
+    }
+
+    @Test
+    fun `worlds are keyed the way polar registers them`() {
+        // Polar.createWorld uses NamespacedKey.fromString(name, polarPlugin)
+        assertEquals("polarpaper:${world.uuid}", PlatformWorldBridgePaper.worldKey(world).asString())
     }
 }

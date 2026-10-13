@@ -10,6 +10,7 @@ import live.minehub.polarpaper.Polar
 import live.minehub.polarpaper.core.source.BytesPolarSource
 import live.minehub.polarpaper.core.world.PolarWorld
 import org.bukkit.Bukkit
+import org.bukkit.NamespacedKey
 import org.bukkit.World
 import kotlin.coroutines.CoroutineContext
 
@@ -24,7 +25,7 @@ class PlatformWorldBridgePaper(
     }
 
     override suspend fun loadWorld(world: SurfWorld) {
-        if (Bukkit.getWorld(world.name) != null) {
+        if (getPlatformWorld<World>(world) != null) {
             return
         }
 
@@ -62,10 +63,15 @@ class PlatformWorldBridgePaper(
 
     @Suppress("UNCHECKED_CAST")
     override fun <W> getPlatformWorld(world: SurfWorld): W? {
-        return Bukkit.getWorld(world.name) as? W
+        return Bukkit.getWorld(worldKey(world)) as? W
     }
 
     companion object {
+        // Polar registers the worlds it creates under its own namespace, so they cannot be found by plain name
+        const val POLAR_NAMESPACE = "polarpaper"
+
+        fun worldKey(world: SurfWorld) = NamespacedKey(POLAR_NAMESPACE, world.name)
+
         // Overworld height, Y -64 to 319
         const val EMPTY_WORLD_MIN_SECTION: Byte = -4
         const val EMPTY_WORLD_MAX_SECTION: Byte = 19
