@@ -3,6 +3,7 @@ package dev.slne.surf.polarpaper.core.client.config
 import dev.slne.surf.polarpaper.core.client.config.storage.PolarPaperStorageConfig
 import dev.slne.surf.polarpaper.core.client.config.storage.PolarPaperStorageType
 import dev.slne.surf.polarpaper.core.client.fakes.RecordingSurfConfigApi
+import dev.slne.surf.polarpaper.core.client.storage.StorageContext
 import dev.slne.surf.polarpaper.core.client.storage.database.DatabaseStorageConfig
 import dev.slne.surf.polarpaper.core.client.storage.disk.DiskStorageConfig
 import dev.slne.surf.polarpaper.core.client.storage.disk.DiskStorageProvider
@@ -19,6 +20,8 @@ import java.nio.file.Path
 class PolarPaperConfigTest {
     @TempDir
     lateinit var dataPath: Path
+
+    private val context get() = StorageContext(dataPath) { error("Database storage is not used here") }
 
     private val s3Config = S3StorageConfig(endpoint = "http://localhost", bucket = "b", accessKey = "a", secretKey = "s")
 
@@ -47,7 +50,7 @@ class PolarPaperConfigTest {
 
         assertEquals(PolarPaperStorageType.DISK, storage.storageType)
         assertEquals(DiskStorageConfig("worlds"), storage.activeStorageConfig())
-        assertInstanceOf(DiskStorageProvider::class.java, storage.createStorageProvider(dataPath))
+        assertInstanceOf(DiskStorageProvider::class.java, storage.createStorageProvider(context))
     }
 
     @Test
@@ -61,7 +64,7 @@ class PolarPaperConfigTest {
 
         assertSame(s3Config, storage.activeStorageConfig())
         assertSame(database, storage.copy(storageType = PolarPaperStorageType.DATABASE).activeStorageConfig())
-        assertInstanceOf(S3StorageProvider::class.java, storage.createStorageProvider(dataPath))
+        assertInstanceOf(S3StorageProvider::class.java, storage.createStorageProvider(context))
     }
 
     @Test
@@ -69,19 +72,19 @@ class PolarPaperConfigTest {
         val storage = PolarPaperStorageConfig(storageType = PolarPaperStorageType.S3)
 
         assertThrows<IllegalArgumentException> { storage.activeStorageConfig() }
-        assertThrows<IllegalArgumentException> { storage.createStorageProvider(dataPath) }
+        assertThrows<IllegalArgumentException> { storage.createStorageProvider(context) }
     }
 
     @Test
     fun `storage types reject configs of another type`() {
         assertThrows<IllegalArgumentException> {
-            PolarPaperStorageType.DISK.createStorageProvider(s3Config, dataPath)
+            PolarPaperStorageType.DISK.createStorageProvider(s3Config, context)
         }
         assertThrows<IllegalArgumentException> {
-            PolarPaperStorageType.S3.createStorageProvider(DiskStorageConfig(), dataPath)
+            PolarPaperStorageType.S3.createStorageProvider(DiskStorageConfig(), context)
         }
         assertThrows<IllegalArgumentException> {
-            PolarPaperStorageType.DATABASE.createStorageProvider(DiskStorageConfig(), dataPath)
+            PolarPaperStorageType.DATABASE.createStorageProvider(DiskStorageConfig(), context)
         }
     }
 }

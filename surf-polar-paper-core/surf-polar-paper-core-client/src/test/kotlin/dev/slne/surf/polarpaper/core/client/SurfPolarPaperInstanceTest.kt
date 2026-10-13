@@ -2,6 +2,7 @@ package dev.slne.surf.polarpaper.core.client
 
 import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
 import dev.slne.surf.polarpaper.core.client.config.PolarPaperConfig
+import dev.slne.surf.polarpaper.core.client.config.WorldLockingConfig
 import dev.slne.surf.polarpaper.core.client.config.storage.PolarPaperStorageConfig
 import dev.slne.surf.polarpaper.core.client.config.storage.PolarPaperStorageType
 import dev.slne.surf.polarpaper.core.client.fakes.FakeS3Server
@@ -31,7 +32,8 @@ class SurfPolarPaperInstanceTest {
 
     private inner class TestInstance(
         override var config: PolarPaperConfig = PolarPaperConfig(
-            storage = PolarPaperStorageConfig(disk = DiskStorageConfig("worlds"))
+            storage = PolarPaperStorageConfig(disk = DiskStorageConfig("worlds")),
+            locking = WorldLockingConfig(enabled = false)
         )
     ) : SurfPolarPaperInstance() {
         override val dataPath: Path get() = this@SurfPolarPaperInstanceTest.dataPath
@@ -73,6 +75,7 @@ class SurfPolarPaperInstanceTest {
         FakeS3Server(bucket = "worlds").use { server ->
             val instance = TestInstance(
                 PolarPaperConfig(
+                    locking = WorldLockingConfig(enabled = false),
                     storage = PolarPaperStorageConfig(
                         storageType = PolarPaperStorageType.S3,
                         s3 = S3StorageConfig(

@@ -1,12 +1,12 @@
 package dev.slne.surf.polarpaper.core.client.config.storage
 
+import dev.slne.surf.polarpaper.core.client.storage.StorageContext
 import dev.slne.surf.polarpaper.core.client.storage.StorageProvider
 import dev.slne.surf.polarpaper.core.client.storage.database.DatabaseStorageConfig
 import dev.slne.surf.polarpaper.core.client.storage.disk.DiskStorageConfig
 import dev.slne.surf.polarpaper.core.client.storage.s3.S3StorageConfig
 import org.spongepowered.configurate.objectmapping.ConfigSerializable
 import org.spongepowered.configurate.objectmapping.meta.Comment
-import java.nio.file.Path
 
 @ConfigSerializable
 data class PolarPaperStorageConfig(
@@ -26,6 +26,6 @@ data class PolarPaperStorageConfig(
         PolarPaperStorageType.S3 -> s3
     } ?: throw IllegalArgumentException("Storage config for $storageType is not provided in the configuration.")
 
-    fun createStorageProvider(dataPath: Path): StorageProvider =
-        storageType.createStorageProvider(activeStorageConfig(), dataPath)
+    fun createStorageProvider(context: StorageContext): StorageProvider =
+        storageType.createStorageProvider(activeStorageConfig(), context)
 }

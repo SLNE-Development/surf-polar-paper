@@ -8,6 +8,8 @@ import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
 import dev.slne.surf.polarpaper.api.world.GameModeIdentifiers
 import dev.slne.surf.polarpaper.api.world.SurfWorld
 import dev.slne.surf.polarpaper.api.world.WorldInfo
+import dev.slne.surf.polarpaper.core.client.lock.DisabledWorldLocks
+import dev.slne.surf.polarpaper.core.client.lock.WorldLocks
 import dev.slne.surf.polarpaper.core.client.storage.StorageProvider
 import dev.slne.surf.polarpaper.core.client.utils.WorldStorageCodec
 import dev.slne.surf.polarpaper.core.common.world.PlatformWorldBridge
@@ -21,11 +23,13 @@ import java.util.*
 @AutoService(SurfPolarPaperApi::class)
 class SurfPolarPaperApiImpl internal constructor(
     private val storageProviderSupplier: () -> StorageProvider?,
-    private val platformBridgeSupplier: () -> PlatformWorldBridge
+    private val platformBridgeSupplier: () -> PlatformWorldBridge,
+    private val worldLocksSupplier: () -> WorldLocks = { DisabledWorldLocks }
 ) : SurfPolarPaperApi {
     constructor() : this(
         storageProviderSupplier = { SurfPolarPaperInstance.INSTANCE.storageProvider },
-        platformBridgeSupplier = { PlatformWorldBridge.INSTANCE }
+        platformBridgeSupplier = { PlatformWorldBridge.INSTANCE },
+        worldLocksSupplier = { SurfPolarPaperInstance.INSTANCE.worldLocks }
     )
 
     private val log = logger()
@@ -34,6 +38,7 @@ class SurfPolarPaperApiImpl internal constructor(
         .build<WorldCacheKey, SurfWorld>()
 
     private val platformBridge get() = platformBridgeSupplier()
+    private val worldLocks get() = worldLocksSupplier()
 
     override val loadedWorlds: @UnmodifiableView ObjectSet<SurfWorld>
         get() = worldCache.asMap().values.toObjectSet()
@@ -104,8 +109,14 @@ class SurfPolarPaperApiImpl internal constructor(
 
         val world = SurfWorld(worldUuid, gameModeIdentifier, worldBytes)
 
-        createWorldPlatform(world)
-        saveWorld(world)
+        worldLocks.lock(world.key())
+        try {
+            createWorldPlatform(world)
+            saveWorld(world)
+        } catch (exception: Exception) {
+            releaseLock(world.key())
+            throw exception
+        }
 
         log.atInfo().log("Created world $world")
 
@@ -125,13 +136,21 @@ class SurfPolarPaperApiImpl internal constructor(
             return cacheHit
         }
 
-        val storedBytes = storageProvider.loadWorldBytes(worldUuid, gameModeIdentifier)
-            ?: throw IllegalStateException("World with UUID $worldUuid and game mode $gameModeIdentifier does not exist")
-        val worldBytes = WorldStorageCodec.decode(storedBytes)
+        // Locked before reading, so no other server can change the world while it is loaded here
+        worldLocks.lock(key)
 
-        val world = SurfWorld(worldUuid, gameModeIdentifier, worldBytes)
+        val world = try {
+            val storedBytes = storageProvider.loadWorldBytes(worldUuid, gameModeIdentifier)
+                ?: throw IllegalStateException("World with UUID $worldUuid and game mode $gameModeIdentifier does not exist")
+            val world = SurfWorld(worldUuid, gameModeIdentifier, WorldStorageCodec.decode(storedBytes))
 
-        loadWorldPlatform(world)
+            loadWorldPlatform(world)
+            world
+        } catch (exception: Exception) {
+            releaseLock(key)
+            throw exception
+        }
+
         worldCache.put(key, world)
 
         log.atInfo().log("Loaded world $world")
@@ -143,6 +162,11 @@ class SurfPolarPaperApiImpl internal constructor(
         world: SurfWorld
     ) = withStorageProvider { storageProvider ->
         GameModeIdentifiers.requireValid(world.gameModeIdentifier)
+
+        // Without the lock another server may have loaded and changed the world, saving would overwrite that
+        check(worldLocks.isHeld(world.key())) {
+            "Not saving world $world, this server no longer holds its lock"
+        }
 
         saveWorldPlatform(world)
 
@@ -166,6 +190,7 @@ class SurfPolarPaperApiImpl internal constructor(
 
         unloadWorldPlatform(world)
         worldCache.invalidate(world.key())
+        releaseLock(world.key())
 
         log.atInfo().log("Unloaded world $world")
     }
@@ -175,11 +200,33 @@ class SurfPolarPaperApiImpl internal constructor(
     ) = withStorageProvider { storageProvider ->
         GameModeIdentifiers.requireValid(world.gameModeIdentifier)
 
-        unloadWorld(world, saveChanges = false)
+        // A world that is not loaded here is locked for the deletion, so it cannot be deleted while loaded elsewhere
+        val key = world.key()
+        if (!worldLocks.isHeld(key)) {
+            worldLocks.lock(key)
+        }
 
-        storageProvider.deleteWorldBytes(world.uuid, world.gameModeIdentifier)
+        try {
+            unloadWorldPlatform(world)
+            worldCache.invalidate(key)
+
+            storageProvider.deleteWorldBytes(world.uuid, world.gameModeIdentifier)
+        } finally {
+            releaseLock(key)
+        }
 
         log.atInfo().log("Deleted world $world")
+    }
+
+    private suspend fun releaseLock(key: WorldCacheKey) {
+        try {
+            worldLocks.unlock(key)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: Exception) {
+            // The lease runs out on its own, so the world only stays unavailable for a little while
+            log.atWarning().withCause(exception).log("Failed to release the lock of world $key")
+        }
     }
 
     override suspend fun unloadAllWorlds(

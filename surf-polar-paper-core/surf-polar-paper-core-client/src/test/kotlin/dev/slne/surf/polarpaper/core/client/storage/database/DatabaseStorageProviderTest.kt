@@ -2,35 +2,22 @@ package dev.slne.surf.polarpaper.core.client.storage.database
 
 import dev.slne.surf.polarpaper.api.world.WorldInfo
 import dev.slne.surf.polarpaper.core.common.storage.database.DatabaseStorageService
-import dev.slne.surf.rabbitmq.api.ClientRabbitMQApi
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
-import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.*
 
 class DatabaseStorageProviderTest {
-    private val rabbitApi = mockk<ClientRabbitMQApi>(relaxed = true)
     private val service = mockk<DatabaseStorageService>(relaxed = true)
     private var proxyCreations = 0
-    private val provider = DatabaseStorageProvider(rabbitApi) {
+    private val provider = DatabaseStorageProvider {
         proxyCreations++
         service
-    }
-
-    @Test
-    fun `connect and disconnect go through the rabbit api`() = runTest {
-        provider.connect()
-        provider.disconnect()
-
-        coVerify(exactly = 1) { rabbitApi.freezeAndConnect() }
-        coVerify(exactly = 1) { rabbitApi.disconnect() }
     }
 
     @Test
@@ -57,12 +44,6 @@ class DatabaseStorageProviderTest {
 
         coVerify { service.writeWorldBytes(uuid, "survival", byteArrayOf(3)) }
         coVerify { service.deleteWorldBytes(uuid, "survival") }
-    }
-
-    @Test
-    fun `the rabbitmq client is detected on the classpath`() {
-        assertTrue(DatabaseStorageProvider.isRabbitMqAvailable())
-        assertFalse(DatabaseStorageProvider.isRabbitMqAvailable(className = "dev.slne.surf.rabbitmq.api.Missing"))
     }
 
     @Test

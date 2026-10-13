@@ -10,7 +10,8 @@ import java.nio.file.Path
 data class PolarPaperConfig(
     @Comment("The game mode this server hosts worlds for.")
     val gameModeIdentifier: String = "default",
-    val storage: PolarPaperStorageConfig = PolarPaperStorageConfig()
+    val storage: PolarPaperStorageConfig = PolarPaperStorageConfig(),
+    val locking: WorldLockingConfig = WorldLockingConfig()
 ) {
     companion object {
         const val DEFAULT_CONFIG_FILE_NAME = "polar-paper.yml"
