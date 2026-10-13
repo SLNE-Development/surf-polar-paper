@@ -15,11 +15,15 @@ allprojects {
 }
 
 subprojects {
-    // Adventure is provided by the platform at runtime, unit tests need it on their own classpath
+    // The platform provides libraries such as adventure and flogger at runtime, which the published
+    // runtime variants do not bring along, so unit tests run with the main compile classpath as well
     plugins.withType<JavaPlugin> {
+        tasks.named<Test>("test") {
+            classpath += configurations.getByName("compileClasspath")
+        }
+
         dependencies {
-            "testImplementation"("net.kyori:adventure-api:5.2.0")
-            "testImplementation"("net.kyori:adventure-text-serializer-plain:5.2.0")
+            "testRuntimeOnly"("com.google.flogger:flogger-system-backend:0.9")
         }
     }
 }

@@ -18,7 +18,9 @@ abstract class SurfPolarPaperInstance {
             path = dataPath
         )
     }
-    val config: PolarPaperConfig get() = configManager.config
+    open val config: PolarPaperConfig get() = configManager.config
+
+    protected open val api: SurfPolarPaperApi get() = SurfPolarPaperApi.INSTANCE
 
     var storageProvider: StorageProvider? = null
         private set
@@ -36,7 +38,7 @@ abstract class SurfPolarPaperInstance {
     @OverridingMethodsMustInvokeSuper
     open suspend fun onDisable() {
         try {
-            SurfPolarPaperApi.unloadAllWorlds()
+            api.unloadAllWorlds()
         } finally {
             disconnect()
         }
