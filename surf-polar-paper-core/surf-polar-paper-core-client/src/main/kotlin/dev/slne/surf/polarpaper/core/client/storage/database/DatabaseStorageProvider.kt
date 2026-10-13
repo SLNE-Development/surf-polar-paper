@@ -70,4 +70,22 @@ class DatabaseStorageProvider internal constructor(
     ): List<WorldInfo> {
         return proxy.listWorlds(gameModeIdentifier)
     }
+
+    companion object {
+        private const val RABBITMQ_CLIENT_CLASS = "dev.slne.surf.rabbitmq.api.ClientRabbitMQApi"
+
+        /**
+         * Whether the RabbitMQ client is on the classpath. The platform provides it through a separate plugin,
+         * which is optional because only this storage provider needs it.
+         */
+        fun isRabbitMqAvailable(
+            className: String = RABBITMQ_CLIENT_CLASS,
+            classLoader: ClassLoader? = DatabaseStorageProvider::class.java.classLoader
+        ) = try {
+            Class.forName(className, false, classLoader)
+            true
+        } catch (_: ClassNotFoundException) {
+            false
+        }
+    }
 }

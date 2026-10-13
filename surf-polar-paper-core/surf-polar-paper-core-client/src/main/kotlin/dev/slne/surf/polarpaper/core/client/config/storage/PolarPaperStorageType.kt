@@ -25,6 +25,10 @@ enum class PolarPaperStorageType(
             throw IllegalArgumentException("Invalid storage config for DATABASE storage type")
         }
 
+        check(DatabaseStorageProvider.isRabbitMqAvailable()) {
+            "DATABASE storage needs the surf-rabbitmq plugin, which is not installed"
+        }
+
         DatabaseStorageProvider(dataPath)
     }),
     S3({ config, _ ->

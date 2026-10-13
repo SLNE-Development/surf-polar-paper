@@ -9,7 +9,9 @@ import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import java.util.*
 
@@ -55,6 +57,12 @@ class DatabaseStorageProviderTest {
 
         coVerify { service.writeWorldBytes(uuid, "survival", byteArrayOf(3)) }
         coVerify { service.deleteWorldBytes(uuid, "survival") }
+    }
+
+    @Test
+    fun `the rabbitmq client is detected on the classpath`() {
+        assertTrue(DatabaseStorageProvider.isRabbitMqAvailable())
+        assertFalse(DatabaseStorageProvider.isRabbitMqAvailable(className = "dev.slne.surf.rabbitmq.api.Missing"))
     }
 
     @Test

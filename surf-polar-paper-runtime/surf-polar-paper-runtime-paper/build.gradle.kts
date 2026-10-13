@@ -1,4 +1,5 @@
 import dev.slne.surf.api.gradle.util.registerRequired
+import dev.slne.surf.api.gradle.util.registerSoft
 
 plugins {
     id("dev.slne.surf.api.gradle.paper-plugin")
@@ -9,6 +10,9 @@ surfPaperPluginApi {
 
     serverDependencies {
         registerRequired("polarpaper")
+
+        // Only needed for DATABASE storage, which talks to the microservice through RabbitMQ
+        registerSoft("surf-rabbitmq-paper")
     }
 
     testing {
