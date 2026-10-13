@@ -1,5 +1,5 @@
 # Dev server config, copied into run/plugins/surf-polar-paper-runtime-paper by startDevelopmentStack
-# when none exists. Switch storage-type and run /sworld reload to try another storage.
+# when none exists. Switch storage-type and restart the paper container to try another storage.
 
 # The game mode this server hosts worlds for.
 game-mode-identifier: default

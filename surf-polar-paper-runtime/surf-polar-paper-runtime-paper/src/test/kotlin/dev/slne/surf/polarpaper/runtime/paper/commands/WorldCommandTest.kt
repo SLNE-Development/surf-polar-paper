@@ -135,7 +135,7 @@ class WorldCommandTest {
         }
 
         assertEquals(
-            listOf("create", "delete", "join", "list", "load", "reload", "unload"),
+            listOf("create", "delete", "join", "list", "load", "unload"),
             command.subcommands.map { it.name }
         )
         assertEquals(WORLD_PERMISSION, command.permission.permission.orElse(null))
