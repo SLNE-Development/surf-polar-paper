@@ -1,0 +1,5 @@
+# Dev server config of surf-core-paper, copied into run/plugins/surf-core-paper/config.yml by startDevelopmentStack
+# when none exists. surf-polar-paper holds its world locks under server-name.
+server-name: dev-paper
+server-display-name: Dev Paper
+server-category: dev

@@ -1,4 +1,5 @@
-# Local development stack: SeaweedFS (S3 + admin UI), PostgreSQL, RabbitMQ, the storage microservice
+# Local development stack: SeaweedFS (S3 + admin UI), PostgreSQL, RabbitMQ, Valkey, the storage microservice,
+# the surf-core microservice
 # and a Paper dev server that runs from surf-polar-paper-runtime/surf-polar-paper-runtime-paper/run.
 #
 # Use the Gradle tasks in the "developmentStack" group to build, start, stop and clean it.
@@ -146,12 +147,27 @@ services:
       valkey:
         condition: service_healthy
 
+  # Needed by surf-core-paper, which surf-polar-paper takes the server name from
+  surf-core-microservice:
+    image: surf-core-microservice:2.5.4
+    build:
+      context: https://github.com/SLNE-Development/surf-core.git#v2.5.4
+      dockerfile: surf-core-microservice/Dockerfile
+    environment:
+      <<: [ *rabbitmq-environment, *database-environment, *valkey-environment ]
+      JAVA_OPTS: *java-tool-options
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      valkey:
+        condition: service_healthy
+
   paper:
     image: itzg/minecraft-server:2026.9.2-java25
-    # World locks are held under the hostname
-    hostname: dev-paper
     environment:
-      <<: *rabbitmq-environment
+      <<: [ *rabbitmq-environment, *valkey-environment ]
       JVM_OPTS: *java-tool-options
       EULA: "TRUE"
       TYPE: PAPER
@@ -173,6 +189,8 @@ services:
       seaweedfs-init:
         condition: service_completed_successfully
       microservice:
+        condition: service_started
+      surf-core-microservice:
         condition: service_started
 
 volumes:

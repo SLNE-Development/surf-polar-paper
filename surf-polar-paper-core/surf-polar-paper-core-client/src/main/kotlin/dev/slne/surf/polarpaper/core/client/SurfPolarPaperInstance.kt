@@ -22,6 +22,11 @@ private val instance = requiredService<SurfPolarPaperInstance>()
 abstract class SurfPolarPaperInstance {
     abstract val dataPath: Path
 
+    /**
+     * Name of this server, unique in the network. World locks are held under it.
+     */
+    abstract val serverName: String
+
     // Lazy so that dataPath is only read once the subclass is fully initialized
     val configManager by lazy {
         PolarPaperConfig.createConfigManager(
@@ -87,7 +92,7 @@ abstract class SurfPolarPaperInstance {
         this.storageProvider = storageProvider
 
         if (config.locking.enabled) {
-            val locks = RemoteWorldLocks(config.locking.resolveServerName(), checkNotNull(rabbitServices).worldLocks)
+            val locks = RemoteWorldLocks(serverName, checkNotNull(rabbitServices).worldLocks)
             locks.releaseLeftoverLocks()
             locks.startRenewing(lockRenewalScope)
             worldLocks = locks

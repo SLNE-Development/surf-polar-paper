@@ -72,8 +72,6 @@ storage:
 locking:
     # Locks worlds so each is only loaded on one server at a time. Needs RabbitMQ and the microservice.
     enabled: true
-    # Name this server holds world locks under, unique per server. Empty uses the hostname.
-    server-name: ""
 ```
 
 ### Commands

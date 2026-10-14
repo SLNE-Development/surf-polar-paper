@@ -37,6 +37,7 @@ class SurfPolarPaperInstanceTest {
         )
     ) : SurfPolarPaperInstance() {
         override val dataPath: Path get() = this@SurfPolarPaperInstanceTest.dataPath
+        override val serverName = "lobby-1"
         override val api: SurfPolarPaperApi get() = this@SurfPolarPaperInstanceTest.api
     }
 
@@ -44,6 +45,7 @@ class SurfPolarPaperInstanceTest {
     fun `constructing an instance does not read dataPath`() {
         class NotReadyInstance : SurfPolarPaperInstance() {
             override val dataPath: Path get() = error("dataPath is not available yet")
+            override val serverName: String get() = error("serverName is not available yet")
         }
 
         assertDoesNotThrow { NotReadyInstance() }

@@ -8,6 +8,8 @@ plugins {
 surfPaperPluginApi {
     mainClass("dev.slne.surf.polarpaper.runtime.paper.PaperMain")
 
+    withCorePaper()
+
     serverDependencies {
         registerRequired("polarpaper")
 

@@ -21,17 +21,23 @@ val deployDevelopmentPlugin = tasks.register<DeployDevelopmentPlugin>("deployDev
     composeDirectory = layout.projectDirectory
 }
 
-val deployDevelopmentConfig = tasks.register<Copy>("deployDevelopmentConfig") {
+val deployDevelopmentConfig = tasks.register("deployDevelopmentConfig") {
     group = developmentStackGroup
-    description = "Copies the plugin config template into the dev server unless a config exists already."
+    description = "Copies the plugin config templates into the dev server unless the configs exist already."
 
-    // Paper names the plugin data folder after the plugin, which is named after its project
-    val pluginDataDirectory = serverPluginsDirectory.map { it.dir(project(developmentStack.paperProject.get()).name) }
-    val template = developmentStack.pluginConfigTemplate
-    onlyIf { !pluginDataDirectory.get().file(template.get().asFile.name).asFile.exists() }
+    val pluginsDirectory = serverPluginsDirectory
+    val templates = developmentStack.pluginConfigTemplates
+    inputs.files(templates.map { it.values })
 
-    from(template)
-    into(pluginDataDirectory)
+    doLast {
+        templates.get().forEach { (path, template) ->
+            val config = pluginsDirectory.get().file(path).asFile
+            if (!config.exists()) {
+                config.parentFile.mkdirs()
+                template.asFile.copyTo(config)
+            }
+        }
+    }
 }
 
 val checkDevelopmentPlugins = tasks.register("checkDevelopmentPlugins") {

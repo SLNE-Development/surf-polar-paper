@@ -1,8 +1,9 @@
 package dev.slne.surf.polarpaper.gradle.devstack
 
 import org.gradle.api.file.DirectoryProperty
-import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.file.RegularFile
 import org.gradle.api.provider.ListProperty
+import org.gradle.api.provider.MapProperty
 import org.gradle.api.provider.Property
 
 /**
@@ -18,8 +19,11 @@ abstract class DevelopmentStackExtension {
     /** Folder the Paper container runs from. */
     abstract val serverDirectory: DirectoryProperty
 
-    /** Plugin config copied into the server's plugin data folder when none exists yet. */
-    abstract val pluginConfigTemplate: RegularFileProperty
+    /**
+     * Plugin configs copied into the server's plugins folder when they do not exist yet, keyed by their path relative
+     * to plugins/, e.g. `my-plugin/config.yml`.
+     */
+    abstract val pluginConfigTemplates: MapProperty<String, RegularFile>
 
     /** File name prefixes of plugins the server needs besides this one. They have to be put into plugins/ manually. */
     abstract val requiredServerPlugins: ListProperty<String>
