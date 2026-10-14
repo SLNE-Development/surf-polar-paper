@@ -89,6 +89,26 @@ class RemoteWorldLocksTest {
     }
 
     @Test
+    fun `leftover locks of an earlier run are released`() = runTest {
+        val other = WorldCacheKey(UUID.randomUUID(), "survival")
+        service.owners[world] = "lobby-1" // left behind by a run that was killed
+        service.owners[other] = "lobby-2"
+
+        locks.releaseLeftoverLocks()
+
+        assertEquals(mapOf(other to "lobby-2"), service.owners)
+    }
+
+    @Test
+    fun `leftover locks cannot be released while holding a world`() = runTest {
+        locks.lock(world)
+
+        assertThrows<IllegalStateException> { locks.releaseLeftoverLocks() }
+
+        assertEquals("lobby-1", service.owners[world])
+    }
+
+    @Test
     fun `closing releases every lock and stops renewing`() = runTest {
         locks.lock(world)
         locks.startRenewing(backgroundScope)

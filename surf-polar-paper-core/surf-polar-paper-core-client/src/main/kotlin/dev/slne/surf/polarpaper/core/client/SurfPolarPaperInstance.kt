@@ -88,6 +88,7 @@ abstract class SurfPolarPaperInstance {
 
         if (config.locking.enabled) {
             val locks = RemoteWorldLocks(config.locking.resolveServerName(), checkNotNull(rabbitServices).worldLocks)
+            locks.releaseLeftoverLocks()
             locks.startRenewing(lockRenewalScope)
             worldLocks = locks
         }

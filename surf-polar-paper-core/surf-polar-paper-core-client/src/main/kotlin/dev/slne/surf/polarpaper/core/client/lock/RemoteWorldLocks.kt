@@ -28,6 +28,17 @@ class RemoteWorldLocks(
     private var renewJob: Job? = null
 
     /**
+     * Releases the locks an earlier run of this server still holds, e.g. after it was killed before it could unlock
+     * them. Without this its worlds stay locked until their leases run out. Only safe while this server holds nothing,
+     * since the owner name is the only thing that tells the runs apart.
+     */
+    suspend fun releaseLeftoverLocks() {
+        check(held.isEmpty()) { "Cannot release leftover locks while holding $held" }
+
+        service.unlockAll(owner)
+    }
+
+    /**
      * Starts renewing the held leases in [scope].
      */
     fun startRenewing(scope: CoroutineScope) {
