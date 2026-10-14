@@ -106,6 +106,16 @@ within a minute. A server that lost a lock refuses to save that world instead of
 - `SURF_RABBITMQ_*` for RabbitMQ
 - `SURF_REDIS_HOST`, `SURF_REDIS_PORT`, `SURF_REDIS_PASSWORD` for Valkey
 
+It also comes as a Docker image, built from the repository root with the Dockerfile that the microservice Gradle
+plugin generates (`./gradlew generateMicroserviceDockerfile`):
+
+```shell
+docker build -f surf-polar-paper-runtime/surf-polar-paper-runtime-microservice/Dockerfile -t surf-polar-paper-microservice .
+```
+
+Docker's default seccomp profile blocks io_uring, so pass the Netty switches through `JAVA_OPTS`:
+`-Dio.netty.transport.noNative=true -Ddev.slne.surf.rabbitmq.shaded.io.netty.transport.noNative=true -Ddev.slne.surf.redis.shaded.io.netty.transport.noNative=true`.
+
 ## Development
 
 Requires Java 25 and Docker.

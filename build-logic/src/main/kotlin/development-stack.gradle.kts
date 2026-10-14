@@ -53,15 +53,15 @@ val checkDevelopmentPlugins = tasks.register("checkDevelopmentPlugins") {
 
 tasks.register<Exec>("startDevelopmentStack") {
     group = developmentStackGroup
-    description = "Builds the plugin and microservice and starts the development stack."
+    description = "Builds the plugin and the microservice image and starts the development stack."
     dependsOn(
-        developmentStack.microserviceProject.map { "$it:shadowJar" },
+        developmentStack.microserviceProject.map { "$it:generateMicroserviceDockerfile" },
         deployDevelopmentPlugin,
         deployDevelopmentConfig,
         checkDevelopmentPlugins
     )
 
-    commandLine("docker", "compose", "up", "--detach", "--remove-orphans")
+    commandLine("docker", "compose", "up", "--build", "--detach", "--remove-orphans")
     doLast {
         println(
             """

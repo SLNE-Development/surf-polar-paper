@@ -129,16 +129,13 @@ services:
         condition: service_healthy
 
   microservice:
-    image: eclipse-temurin:25.0.4.1_1-jre-alpine
-    working_dir: /app
-    # Runs the shadow jar built by the startDevelopmentStack task
-    command: [ "/bin/sh", "-c", "exec java -jar /app/libs/surf-polar-paper-runtime-microservice-*-all.jar" ]
+    image: surf-polar-paper-microservice:dev
+    build:
+      context: .
+      dockerfile: surf-polar-paper-runtime/surf-polar-paper-runtime-microservice/Dockerfile
     environment:
       <<: [ *rabbitmq-environment, *database-environment, *valkey-environment ]
-      JAVA_TOOL_OPTIONS: *java-tool-options
-    volumes:
-      - ./surf-polar-paper-runtime/surf-polar-paper-runtime-microservice/build/libs:/app/libs:ro
-      - microservice-config:/app/config
+      JAVA_OPTS: *java-tool-options
     stdin_open: true
     tty: true
     depends_on:
@@ -183,4 +180,3 @@ volumes:
   rabbitmq-data:
   seaweedfs-data:
   seaweedfs-admin-data:
-  microservice-config:
