@@ -45,6 +45,7 @@ Download `surf-polar-paper-runtime-paper-<version>-all.jar` from the
 
 - [polarpaper](https://github.com/MinehubMC/polarpaper)
 - surf-api-paper-server
+- [surf-core-paper](https://github.com/SLNE-Development/surf-core/releases), world locks are held under its server name
 - [CommandAPI](https://commandapi.jorel.dev)
 - [surf-rabbitmq-paper](https://github.com/SLNE-Development/surf-rabbitmq/releases), needed for database storage and
   world locking
@@ -104,11 +105,11 @@ within a minute. A server that lost a lock refuses to save that world instead of
 - `SURF_RABBITMQ_*` for RabbitMQ
 - `SURF_REDIS_HOST`, `SURF_REDIS_PORT`, `SURF_REDIS_PASSWORD` for Valkey
 
-It also comes as a Docker image, built from the repository root with the Dockerfile that the microservice Gradle
-plugin generates (`./gradlew generateMicroserviceDockerfile`):
+It is also published as a Docker image, built by CI from the Dockerfile that the microservice Gradle plugin generates
+(`./gradlew generateMicroserviceDockerfile`):
 
 ```shell
-docker build -f surf-polar-paper-runtime/surf-polar-paper-runtime-microservice/Dockerfile -t surf-polar-paper-microservice .
+docker pull ghcr.io/slne-development/surf-polar-paper-microservice:<version>
 ```
 
 Docker's default seccomp profile blocks io_uring, so pass the Netty switches through `JAVA_OPTS`:
@@ -116,30 +117,18 @@ Docker's default seccomp profile blocks io_uring, so pass the Netty switches thr
 
 ## Development
 
-Requires Java 25 and Docker.
+Requires Java 25. The microservice tests start PostgreSQL and Valkey with Testcontainers, so they need Docker.
 
 ```shell
-./gradlew build                  # build and run all tests (the microservice tests start Testcontainers)
-./gradlew startDevelopmentStack  # start PostgreSQL, RabbitMQ, Valkey, SeaweedFS, the microservice and a Paper server
-./gradlew deployDevelopmentPlugin  # rebuild the plugin and restart the Paper server with it
-./gradlew stopDevelopmentStack   # stop the stack
-./gradlew cleanDevelopmentStack  # stop the stack and delete its volumes
+./gradlew build
 ```
-
-The Paper server runs from `surf-polar-paper-runtime/surf-polar-paper-runtime-paper/run/`. Its `plugins/` folder needs
-the plugins listed under [Installing the plugin](#installing-the-plugin) plus LuckPerms and packetevents.
-`startDevelopmentStack` names any that are missing. Copy `.env.example` to `.env` to change ports and credentials.
-
-| Service          | Address                    |
-|------------------|----------------------------|
-| Paper            | `localhost:25565`          |
-| RabbitMQ UI      | http://localhost:15672     |
-| SeaweedFS admin  | http://localhost:23646     |
-| S3               | http://localhost:8333      |
-| PostgreSQL       | `localhost:5432`           |
-| Valkey           | `localhost:6379`           |
 
 ## Releasing
 
-Pushing to a `version/**` branch runs `.github/workflows/publish.yml`, which publishes the API to Reposilite and creates
-the GitHub release `v<version>` with the Paper plugin attached. The version comes from `gradle.properties`.
+Pushing to a `version/**` branch runs `.github/workflows/publish.yml`, which
+
+- publishes the API to Reposilite,
+- creates the GitHub release `v<version>` with the Paper plugin attached,
+- pushes the microservice image to `ghcr.io/slne-development/surf-polar-paper-microservice` as `<version>` and `latest`.
+
+The version comes from `gradle.properties`.
