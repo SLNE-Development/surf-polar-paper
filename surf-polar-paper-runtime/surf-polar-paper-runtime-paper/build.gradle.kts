@@ -28,10 +28,12 @@ repositories {
 surfPaperPluginApi {
     mainClass("dev.slne.surf.polarpaper.runtime.paper.PaperMain")
 
-    withCorePaper()
-
     serverDependencies {
         registerRequired("polarpaper")
+
+        // Optional: the server name for world locks comes from it, or from SURF_POLAR_PAPER_SERVER_NAME or the
+        // surf.polarpaper.server-name system property
+        registerSoft("surf-core-paper")
 
         // Only needed for DATABASE storage, which talks to the microservice through RabbitMQ
         registerSoft("surf-rabbitmq-paper")
@@ -53,6 +55,9 @@ dependencies {
     // server classes are only needed to compile against and nothing is remapped or bundled into our jar.
 
     compileOnlyApi("live.minehub:polarpaper:2.3.1")
+
+    // Only touched through SurfCoreServerName, so the plugin works without surf-core-paper installed
+    compileOnly("dev.slne.surf.core:surf-core-api-paper:+")
 
     compileOnly("com.nexomc:nexo:1.29.1")
     compileOnly("net.momirealms:craft-engine-core:26.9.1")
