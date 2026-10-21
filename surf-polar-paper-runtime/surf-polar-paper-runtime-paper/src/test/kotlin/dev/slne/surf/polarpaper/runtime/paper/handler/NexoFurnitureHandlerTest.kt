@@ -40,6 +40,7 @@ class NexoFurnitureHandlerTest {
         val toggled = mutableListOf<Boolean>()
         var known = setOf<String>()
         var failWith: RuntimeException? = null
+        var failState: RuntimeException? = null
         val display = mockk<ItemDisplay>(relaxed = true)
 
         data class Place(val id: String, val location: Location, val yaw: Float, val face: BlockFace)
@@ -51,8 +52,10 @@ class NexoFurnitureHandlerTest {
         override fun seats(display: ItemDisplay) = seatsOf[display].orEmpty()
         override fun isSeat(entity: Entity) = entity in seatEntities
         override fun placementFace(display: ItemDisplay) = faces[display] ?: BlockFace.UP
+        override fun placementBlock(display: ItemDisplay) = BlockPos(display.location.blockX, 64, 3)
         override fun stateBytes(display: ItemDisplay) = states[display]
         override fun applyState(display: ItemDisplay, bytes: ByteArray) {
+            failState?.let { throw it }
             appliedStates += bytes
         }
 
@@ -117,11 +120,12 @@ class NexoFurnitureHandlerTest {
                     "oak_chair", 1.5, 64.5, 3.5, 90f, 10f,
                     mapOf(
                         "face" to "UP",
+                        "block" to "1,64,3",
                         "pdc" to Base64.getEncoder().encodeToString(byteArrayOf(1, 2, 3)),
                         "dye" to Color.fromARGB(255, 10, 20, 30).asARGB().toString()
                     )
                 ),
-                FurnitureRecord("table", 2.5, 64.5, 3.5, 90f, 10f, mapOf("face" to "NORTH"))
+                FurnitureRecord("table", 2.5, 64.5, 3.5, 90f, 10f, mapOf("face" to "NORTH", "block" to "2,64,3"))
             ),
             records
         )
@@ -200,8 +204,75 @@ class NexoFurnitureHandlerTest {
 
         assertEquals(listOf("oak_chair"), nexo.placed.map { it.id })
         assertEquals(listOf(gone), deferred.capture(chunk, emptyList()) { })
-        // Written back once, so the entry is gone
+    }
+
+    @Test
+    fun `an unplaceable record survives any number of saves`() {
+        val gone = FurnitureRecord("gone", 2.5, 64.5, 3.5, 0f, 0f)
+
+        deferred.restore(chunk, listOf(gone))
+        queued.single().run()
+
+        repeat(3) { assertEquals(listOf(gone), deferred.capture(chunk, emptyList()) { }) }
+    }
+
+    @Test
+    fun `unloading the chunk releases its pending records`() {
+        deferred.restore(chunk, listOf(FurnitureRecord("gone", 2.5, 64.5, 3.5, 0f, 0f)))
+
+        deferred.chunkUnloaded(4, -2)
+
         assertNull(deferred.capture(chunk, emptyList()) { })
+    }
+
+    @Test
+    fun `a task of an older restore does not place again after a reload`() {
+        nexo.known = setOf("oak_chair")
+        val chair = FurnitureRecord("oak_chair", 1.5, 64.5, 3.5, 90f, 10f)
+
+        deferred.restore(chunk, listOf(chair))
+        deferred.chunkUnloaded(4, -2)
+        deferred.restore(chunk, listOf(chair))
+        queued.forEach { it.run() }
+
+        assertEquals(1, nexo.placed.size)
+    }
+
+    @Test
+    fun `a record is not emitted twice when reapplying its state fails`() {
+        nexo.known = setOf("oak_chair")
+        nexo.failState = IllegalStateException("boom")
+        val properties = mapOf("pdc" to Base64.getEncoder().encodeToString(byteArrayOf(1)))
+
+        deferred.restore(chunk, listOf(FurnitureRecord("oak_chair", 1.5, 64.5, 3.5, 90f, 10f, properties)))
+        queued.single().run()
+
+        assertEquals(1, nexo.placed.size)
+        assertNull(deferred.capture(chunk, emptyList()) { })
+    }
+
+    @Test
+    fun `restore places from the center of the stored block`() {
+        nexo.known = setOf("lamp")
+
+        handler.restore(chunk, listOf(FurnitureRecord("lamp", 1.5, 70.2, 3.5, 0f, 0f, mapOf("block" to "1,64,3"))))
+
+        val location = nexo.placed.single().location
+        assertEquals(Triple(1.5, 64.5, 3.5), Triple(location.x, location.y, location.z))
+    }
+
+    @Test
+    fun `inverts the spawn correction for floor roof and wall furniture`() {
+        val air = { _: Int, _: Int, _: Int -> false }
+        // Floor, block center and fixed transform at the block bottom
+        assertEquals(BlockPos(1, 64, 3), invertSpawnCorrection(1.5, 64.5, 3.5, BlockFace.UP, false, false, false, 1f, air))
+        assertEquals(BlockPos(1, 64, 3), invertSpawnCorrection(1.5, 64.0, 3.5, BlockFace.UP, false, false, true, 1f, air))
+        // Roof furniture is raised by 0.49
+        assertEquals(BlockPos(1, 64, 3), invertSpawnCorrection(1.5, 64.5 + 0.49, 3.5, BlockFace.DOWN, false, true, false, 1f, air))
+        // Fixed wall furniture facing south is moved against its wall by 0.98 * scale, which leaves its block for scale 0.6
+        val shift = 0.49 * 0.6 * 2
+        assertEquals(BlockPos(1, 64, 3), invertSpawnCorrection(1.5, 64.5, 3.5 - shift, BlockFace.SOUTH, true, false, true, 0.6f, air))
+        assertEquals(BlockPos(1, 64, 3), invertSpawnCorrection(1.5, 64.5, 3.5, BlockFace.SOUTH, true, false, true, 0.6f) { _, _, _ -> true })
     }
 
     @Test

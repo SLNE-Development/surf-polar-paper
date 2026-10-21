@@ -61,6 +61,13 @@ class SurfWorldAccess(
     fun forget(x: Int, z: Int) {
         undecodable -= LiveChunkRegistry.key(x, z)
         prepared.remove(LiveChunkRegistry.key(x, z))
+        for (handler in handlers) {
+            try {
+                handler.chunkUnloaded(x, z)
+            } catch (e: Exception) {
+                log.atWarning().withCause(e).log("Handler %s failed to release chunk %s, %s", handler.type.key, x, z)
+            }
+        }
     }
 
     override fun getPlugin(): Plugin = world.api.plugin

@@ -21,4 +21,10 @@ interface ChunkDataHandler<T : Any> {
 
     /** Runs on the tick thread while the chunk is loaded, right after it became live. */
     fun restore(chunk: Chunk, value: T)
+
+    /**
+     * Called when the chunk at [x], [z] unloaded, after its last save. Handlers that keep per-chunk state, such as
+     * records that are not restored yet, release it here. Does nothing by default.
+     */
+    fun chunkUnloaded(x: Int, z: Int) = Unit
 }
