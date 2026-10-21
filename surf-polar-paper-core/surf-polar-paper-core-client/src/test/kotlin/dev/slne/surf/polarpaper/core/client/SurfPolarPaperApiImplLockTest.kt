@@ -28,7 +28,7 @@ class SurfPolarPaperApiImplLockTest {
     private val key = WorldCacheKey(uuid, "survival")
 
     private fun store(worldBytes: ByteArray = byteArrayOf(1)) {
-        storage.stored[key] = WorldStorageCodec.encode(worldBytes)
+        storage.stored[key] = WorldStorageCodec.encode(0, worldBytes)
     }
 
     @Test
@@ -90,7 +90,7 @@ class SurfPolarPaperApiImplLockTest {
 
         assertThrows<IllegalStateException> { api.saveWorld(world) }
 
-        assertEquals(1, WorldStorageCodec.decode(storage.stored.getValue(key)).single().toInt())
+        assertEquals(1, WorldStorageCodec.decode(storage.stored.getValue(key)).worldBytes.single().toInt())
     }
 
     @Test

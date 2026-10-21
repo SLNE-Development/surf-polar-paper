@@ -22,11 +22,11 @@ class SurfPolarPaperApiImplTest {
     private val api = SurfPolarPaperApiImpl({ storage }, { bridge })
 
     private fun store(uuid: UUID, gameMode: String, worldBytes: ByteArray) {
-        storage.stored[WorldCacheKey(uuid, gameMode)] = WorldStorageCodec.encode(worldBytes)
+        storage.stored[WorldCacheKey(uuid, gameMode)] = WorldStorageCodec.encode(0, worldBytes)
     }
 
     private fun storedWorldBytes(uuid: UUID, gameMode: String): ByteArray? =
-        storage.stored[WorldCacheKey(uuid, gameMode)]?.let(WorldStorageCodec::decode)
+        storage.stored[WorldCacheKey(uuid, gameMode)]?.let { WorldStorageCodec.decode(it).worldBytes }
 
     @Test
     fun `loadWorld decodes the stored bytes, loads the platform world and caches it`() = runTest {

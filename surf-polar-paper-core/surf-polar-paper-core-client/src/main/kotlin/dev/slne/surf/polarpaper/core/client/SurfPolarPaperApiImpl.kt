@@ -142,7 +142,7 @@ class SurfPolarPaperApiImpl internal constructor(
         val world = try {
             val storedBytes = storageProvider.loadWorldBytes(worldUuid, gameModeIdentifier)
                 ?: throw IllegalStateException("World with UUID $worldUuid and game mode $gameModeIdentifier does not exist")
-            val world = SurfWorld(worldUuid, gameModeIdentifier, WorldStorageCodec.decode(storedBytes))
+            val world = SurfWorld(worldUuid, gameModeIdentifier, WorldStorageCodec.decode(storedBytes).worldBytes)
 
             loadWorldPlatform(world)
             world
@@ -173,7 +173,7 @@ class SurfPolarPaperApiImpl internal constructor(
         storageProvider.writeWorldBytes(
             world.uuid,
             world.gameModeIdentifier,
-            WorldStorageCodec.encode(world.worldBytes)
+            WorldStorageCodec.encode(0, world.worldBytes)
         )
         worldCache.put(world.key(), world)
 

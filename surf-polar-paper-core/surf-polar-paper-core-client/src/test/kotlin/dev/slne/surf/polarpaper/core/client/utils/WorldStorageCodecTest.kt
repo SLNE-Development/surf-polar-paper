@@ -1,37 +1,54 @@
+@file:OptIn(ExperimentalSerializationApi::class)
+
 package dev.slne.surf.polarpaper.core.client.utils
 
+import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.ByteString
 import org.junit.jupiter.api.Assertions.assertArrayEquals
+import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import kotlin.random.Random
 
 class WorldStorageCodecTest {
+    @Serializable
+    private class V1Envelope(val formatVersion: Int, @ByteString val worldBytes: ByteArray)
+
     @Test
-    fun `decode returns the encoded world bytes`() {
+    fun `encodes and decodes the world version with the bytes`() {
         val worldBytes = Random(42).nextBytes(1_000_000)
 
-        val decoded = WorldStorageCodec.decode(WorldStorageCodec.encode(worldBytes))
+        val decoded = WorldStorageCodec.decode(WorldStorageCodec.encode(7, worldBytes))
 
-        assertArrayEquals(worldBytes, decoded)
+        assertEquals(7, decoded.worldVersion)
+        assertArrayEquals(worldBytes, decoded.worldBytes)
     }
 
     @Test
     fun `empty world bytes round trip`() {
-        val decoded = WorldStorageCodec.decode(WorldStorageCodec.encode(ByteArray(0)))
+        val decoded = WorldStorageCodec.decode(WorldStorageCodec.encode(0, ByteArray(0)))
 
-        assertArrayEquals(ByteArray(0), decoded)
+        assertArrayEquals(ByteArray(0), decoded.worldBytes)
     }
 
     @Test
     fun `world bytes are stored as a single byte string`() {
         val worldBytes = ByteArray(1_000_000) { 0xFF.toByte() }
 
-        val encoded = WorldStorageCodec.encode(worldBytes)
+        val encoded = WorldStorageCodec.encode(0, worldBytes)
 
         assertTrue(encoded.size - worldBytes.size < 64) {
             "Envelope overhead is ${encoded.size - worldBytes.size} bytes"
         }
+    }
+
+    @Test
+    fun `rejects format version 1`() {
+        val v1 = CborUtils.encode(V1Envelope(1, byteArrayOf(1, 2, 3)))
+
+        assertThrows<IllegalArgumentException> { WorldStorageCodec.decode(v1) }
     }
 
     @Test
