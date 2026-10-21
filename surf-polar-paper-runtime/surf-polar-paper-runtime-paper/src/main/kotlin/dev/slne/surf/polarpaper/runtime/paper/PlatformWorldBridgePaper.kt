@@ -15,9 +15,13 @@ import dev.slne.surf.polarpaper.runtime.paper.world.SurfChunkImpl
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import live.minehub.polarpaper.core.world.PolarWorld
+import org.bukkit.Chunk
 import org.bukkit.World
+import org.bukkit.entity.Entity
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.seconds
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 /** Loads, saves and unloads the Polar worlds behind [SurfWorldImpl]. The steps live in the pipeline classes. */
@@ -82,17 +86,32 @@ class PlatformWorldBridgePaper(
         return savePipeline.save(world, entry, shutdownLockTimeout)
     }
 
-    /**
-     * Drops the sections of a chunk that unloaded. Polar leaves chunks that are not loaded out of its saves, so
-     * whatever the chunk held is lost from the next save on.
-     */
-    fun chunkUnloaded(bukkit: World, x: Int, z: Int) {
-        val entry = loaded.values.firstOrNull { it.bukkit == bukkit } ?: return
-        entry.access.forget(x, z)
-        if (entry.live.sections(x, z) == null) return
+    /** Worlds that are being unloaded. Their chunks unload with them and are not captured. Weak, so a world can go. */
+    private val unloadingWorlds: MutableSet<World> = Collections.newSetFromMap(WeakHashMap())
 
-        entry.live.remove(x, z)
-        log.atWarning().log("Chunk %s, %s of %s unloaded; polar leaves unloaded chunks out of saves", x, z, bukkit.name)
+    /** Marks [bukkit] as unloading: the chunk events that follow belong to the world going away, not to gameplay. */
+    fun worldUnloading(bukkit: World) {
+        unloadingWorlds += bukkit
+    }
+
+    private fun entryOf(bukkit: World): LoadedWorld? {
+        if (bukkit in unloadingWorlds) return null
+        return loaded.values.firstOrNull { it.bukkit == bukkit }
+    }
+
+    /** Hands the entities of a chunk that is about to unload to its capture, see [SurfWorldAccess.entitiesUnloading]. */
+    fun entitiesUnloading(bukkit: World, x: Int, z: Int, entities: List<Entity>) {
+        entryOf(bukkit)?.access?.entitiesUnloading(x, z, entities)
+    }
+
+    /**
+     * Captures a chunk that unloaded, so the saves that follow still write its sections and entities: Polar writes
+     * chunks that are not loaded anymore, but only knows their blocks.
+     */
+    fun chunkUnloaded(bukkit: World, chunk: Chunk) {
+        val entry = entryOf(bukkit) ?: return
+        entry.access.chunkUnloading(chunk)
+        entry.live.remove(chunk.x, chunk.z)
     }
 
     override suspend fun unloadWorld(world: SurfWorldImpl) {

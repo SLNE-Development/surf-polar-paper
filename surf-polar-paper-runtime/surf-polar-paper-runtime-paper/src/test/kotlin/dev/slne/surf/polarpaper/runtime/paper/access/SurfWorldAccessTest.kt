@@ -366,4 +366,77 @@ class SurfWorldAccessTest {
         assertArrayEquals(bytes, SectionContainerCodec.encode(live.sections(2, -3)!!.raw()))
         assertEquals("captured", handler.restored)
     }
+
+    @Test
+    fun `a chunk that unloaded still writes the data captured while it unloaded`() {
+        val handler = StringHandler(stringType)
+        val access = access(handler)
+        every { chunk.entities } returns emptyArray()
+
+        access.chunkUnloading(chunk)
+        live.remove(2, -3)
+
+        // Polar saves a chunk that is not live anymore, after the registry forgot it
+        val result = MapDataSections(SectionContainerCodec.decode(write(access)))
+        assertEquals("captured", result[stringType])
+    }
+
+    @Test
+    fun `the entities of the entities unload are captured instead of the already emptied chunk`() {
+        val pig = entity()
+        val handler = StringHandler(stringType)
+        val access = access(handler)
+        every { chunk.entities } returns emptyArray()
+
+        access.entitiesUnloading(2, -3, listOf(pig))
+        access.chunkUnloading(chunk)
+
+        assertEquals(listOf<Entity>(pig), handler.seenEntities)
+    }
+
+    @Test
+    fun `players of an unloading chunk are not captured`() {
+        val player = mockk<Player>(relaxed = true) { every { isPersistent } returns true }
+        val pig = entity()
+        val handler = StringHandler(stringType)
+        val access = access(handler)
+
+        access.entitiesUnloading(2, -3, listOf(player, pig))
+        access.chunkUnloading(chunk)
+
+        assertEquals(listOf<Entity>(pig), handler.seenEntities)
+    }
+
+    @Test
+    fun `a chunk that loads again gets the data captured at its unload instead of the stale stored data`() {
+        val handler = StringHandler(stringType)
+        val access = access(handler)
+        every { chunk.entities } returns emptyArray()
+        access.chunkUnloading(chunk)
+        live.remove(2, -3)
+
+        val stale = MapDataSections().also { it[stringType] = "stale" }
+        load(access, SectionContainerCodec.encode(stale.raw()))
+
+        assertEquals("captured", handler.restored)
+    }
+
+    @Test
+    fun `a failing capture at unload is logged and the chunk falls back to what polar has`() {
+        val failing = object : ChunkDataHandler<String> {
+            override val type = stringType
+            override fun capture(chunk: Chunk, entities: List<Entity>, claim: (Entity) -> Unit): String? =
+                throw IllegalStateException("broken handler")
+
+            override fun restore(chunk: Chunk, value: String) = Unit
+        }
+        val access = access(failing)
+        existing = byteArrayOf(7)
+        every { chunk.entities } returns emptyArray()
+
+        access.chunkUnloading(chunk)
+        live.remove(2, -3)
+
+        assertArrayEquals(byteArrayOf(7), write(access))
+    }
 }

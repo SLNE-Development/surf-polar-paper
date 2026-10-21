@@ -59,12 +59,9 @@ class WorldSavePipeline(private val platform: PaperPlatform) {
                 async {
                     platform.onChunkThread(loaded.bukkit, x, z) {
                         val chunk = platform.chunkIfLoaded(loaded.bukkit, x, z)
-                        if (chunk == null) {
-                            // Polar only writes chunks that are loaded when it saves, so this chunk is not in the save
-                            log.atWarning().log("Chunk %s, %s of %s is not loaded and is left out of the save", x, z, world)
-                        } else {
-                            loaded.access.prepareChunkSave(chunk)
-                        }
+                        // A chunk that is not live was captured when it unloaded or was never loaded, and Polar still
+                        // writes it, calling the access for its data
+                        if (chunk != null) loaded.access.prepareChunkSave(chunk)
                     }
                 }
             }.awaitAll()

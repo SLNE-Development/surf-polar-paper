@@ -34,6 +34,10 @@ import java.util.concurrent.ConcurrentHashMap
  * therefore captures on the chunk's owning thread first, and [saveChunkData] only writes the prepared bytes.
  *
  * Polar drops chunks that only contain air before it calls [saveChunkData], so the sections of such a chunk are lost.
+ *
+ * Polar also writes chunks that unloaded before the save and calls [saveChunkData] for them, with a chunk that is not
+ * live anymore. Whatever only the live chunk knows (entities, handler state) would be gone by then, so it is captured
+ * while the chunk unloads ([entitiesUnloading], [chunkUnloading]) and written from [unloaded] by every later save.
  */
 class SurfWorldAccess(
     private val world: SurfWorldImpl,
@@ -51,11 +55,43 @@ class SurfWorldAccess(
     /** Container bytes captured by [prepareChunkSave], waiting for Polar to write them. */
     private val prepared = ConcurrentHashMap<Long, ByteArray>()
 
+    /** Container bytes captured when a chunk unloaded, written by every save until the chunk is live again. */
+    private val unloaded = ConcurrentHashMap<Long, ByteArray>()
+
+    /** The entities an unloading chunk had, handed over by the entities unload for the unload of the same chunk. */
+    private val unloadingEntities = ConcurrentHashMap<Long, List<Entity>>()
+
     /** Chunks whose stored data could not be decoded; their stored bytes are kept as they are. */
     private val undecodable = ConcurrentHashMap.newKeySet<Long>()
 
     /** Whether the stored data of the chunk could not be decoded, so its bytes are kept as they are. */
     fun isUndecodable(x: Int, z: Int): Boolean = LiveChunkRegistry.key(x, z) in undecodable
+
+    /**
+     * Remembers the entities of a chunk that is about to unload. Paper removes them from the chunk before it fires the
+     * chunk unload, so [chunkUnloading] could not see them otherwise.
+     */
+    fun entitiesUnloading(x: Int, z: Int, entities: List<Entity>) {
+        unloadingEntities[LiveChunkRegistry.key(x, z)] = entities
+    }
+
+    /**
+     * Captures the chunk that is unloading, so later saves still write its sections and entities, and forgets its
+     * live state. Never throws: a failure is logged and the chunk keeps what Polar already has for it.
+     */
+    fun chunkUnloading(chunk: Chunk) {
+        val x = chunk.x
+        val z = chunk.z
+        val entities = unloadingEntities.remove(LiveChunkRegistry.key(x, z)) ?: chunk.entities.toList()
+        if (!isUndecodable(x, z)) {
+            try {
+                unloaded[LiveChunkRegistry.key(x, z)] = capture(chunk, entities.filter { it !is Player })
+            } catch (e: Exception) {
+                log.atSevere().withCause(e).log("Failed to capture the data of unloading chunk %s, %s of %s", x, z, world)
+            }
+        }
+        forget(x, z)
+    }
 
     /** Forgets the state of a chunk that unloaded. */
     fun forget(x: Int, z: Int) {
@@ -82,6 +118,9 @@ class SurfWorldAccess(
     internal fun load(chunk: Chunk, userData: ByteArray?) {
         val x = chunk.x
         val z = chunk.z
+        unloadingEntities.remove(LiveChunkRegistry.key(x, z))
+        // What the chunk held when it last unloaded is newer than what the Polar world still has for it
+        val userData = unloaded.remove(LiveChunkRegistry.key(x, z)) ?: userData
         val sections = try {
             MapDataSections(SectionContainerCodec.decode(userData))
         } catch (e: Exception) {
@@ -129,27 +168,31 @@ class SurfWorldAccess(
             return
         }
         try {
-            val sections = live.getOrCreate(x, z)
-            val surfChunk = SurfChunkImpl(world, chunk, sections)
-            world.api.settings.chunkSaveHooks.forEach { it(surfChunk) }
-
             // Players are never stored. Polar's own entity array is ignored: it is gathered off-thread
-            val nonPlayers = chunk.entities.filter { it !is Player }
-            val claimed: MutableSet<Entity> = Collections.newSetFromMap(IdentityHashMap())
-            val claim: (Entity) -> Unit = { claimWithPassengers(it, claimed) }
-            for (handler in handlers) {
-                if (!handler.isAvailable()) continue
-                capture(handler, chunk, nonPlayers, claim, sections)
-            }
-            entities?.capture(chunk, nonPlayers.filter { it !in claimed }, sections, claimed)
-
-            prepared[LiveChunkRegistry.key(x, z)] = SectionContainerCodec.encode(sections.raw())
+            prepared[LiveChunkRegistry.key(x, z)] = capture(chunk, chunk.entities.filter { it !is Player })
         } catch (e: Exception) {
             // The round failed, so nothing prepared so far may be written by a later save
             prepared.clear()
             log.atSevere().withCause(e).log("Failed to capture the data of chunk %s, %s of %s", x, z, world)
             throw e
         }
+    }
+
+    /** Runs the save hooks and all handlers on [entities] and returns the container bytes of the chunk. */
+    private fun capture(chunk: Chunk, entities: List<Entity>): ByteArray {
+        val sections = live.getOrCreate(chunk.x, chunk.z)
+        val surfChunk = SurfChunkImpl(world, chunk, sections)
+        world.api.settings.chunkSaveHooks.forEach { it(surfChunk) }
+
+        val claimed: MutableSet<Entity> = Collections.newSetFromMap(IdentityHashMap())
+        val claim: (Entity) -> Unit = { claimWithPassengers(it, claimed) }
+        for (handler in handlers) {
+            if (!handler.isAvailable()) continue
+            capture(handler, chunk, entities, claim, sections)
+        }
+        this.entities?.capture(chunk, entities.filter { it !in claimed }, sections, claimed)
+
+        return SectionContainerCodec.encode(sections.raw())
     }
 
     /** Writes the bytes of [prepareChunkSave]. Polar's [chunkEntities] are ignored, see [prepareChunkSave]. */
@@ -178,6 +221,7 @@ class SurfWorldAccess(
         // Never overwrite what could not be decoded, whatever the registry holds
         if (isUndecodable(chunk.x, chunk.z)) return existingUserData(chunk.x, chunk.z)
         prepared.remove(LiveChunkRegistry.key(chunk.x, chunk.z))?.let { return it }
+        unloaded[LiveChunkRegistry.key(chunk.x, chunk.z)]?.let { return it }
         // Not prepared: write the live sections as they are, or keep what the Polar world already has
         live.sections(chunk.x, chunk.z)?.let { return SectionContainerCodec.encode(it.raw()) }
         return existingUserData(chunk.x, chunk.z)

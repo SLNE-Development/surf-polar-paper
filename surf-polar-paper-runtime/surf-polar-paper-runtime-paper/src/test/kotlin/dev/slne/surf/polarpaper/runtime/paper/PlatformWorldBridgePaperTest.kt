@@ -522,15 +522,34 @@ class PlatformWorldBridgePaperTest {
     }
 
     @Test
-    fun `an unloaded chunk loses its sections`() = runTest {
+    fun `an unloaded chunk leaves the registry and gets its captured sections back when it loads again`() = runTest {
         val world = world(settings(textType))
         val bytes = polarBytes(Triple(0, 0, mapOf(textType.key.asString() to encoded(textType, "chair"))))
         bridge.loadWorld(world, bytes, emptyList())
+        val chunk = platform.loadChunk(platform.bukkit, 0, 0)
+        bridge.chunk(world, 0, 0)!!.data[textType] = "armchair"
+
+        bridge.chunkUnloaded(platform.bukkit, chunk)
+
+        assertNull(platform.access!!.let { bridge.chunk(world, 0, 0) }?.data?.get(textType))
+        // The Polar world still holds the stale "chair", and hands it to the chunk that loads again
+        platform.loadChunk(platform.bukkit, 0, 0)
+        assertEquals("armchair", bridge.chunk(world, 0, 0)?.data?.get(textType))
+    }
+
+    @Test
+    fun `chunks of a world that is unloading are not captured`() = runTest {
+        val world = world(settings(textType))
+        val bytes = polarBytes(Triple(0, 0, mapOf(textType.key.asString() to encoded(textType, "chair"))))
+        bridge.loadWorld(world, bytes, emptyList())
+        val chunk = platform.loadChunk(platform.bukkit, 0, 0)
+        bridge.chunk(world, 0, 0)!!.data[textType] = "armchair"
+
+        bridge.worldUnloading(platform.bukkit)
+        bridge.chunkUnloaded(platform.bukkit, chunk)
+
+        // Nothing was captured, so the chunk that loads again only has what Polar holds
         platform.loadChunk(platform.bukkit, 0, 0)
         assertEquals("chair", bridge.chunk(world, 0, 0)?.data?.get(textType))
-
-        bridge.chunkUnloaded(platform.bukkit, 0, 0)
-
-        assertNull(bridge.chunk(world, 0, 0)?.data?.get(textType))
     }
 }
