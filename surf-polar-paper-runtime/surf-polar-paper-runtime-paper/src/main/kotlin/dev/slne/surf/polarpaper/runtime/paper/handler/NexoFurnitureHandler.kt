@@ -53,13 +53,21 @@ internal fun invertSpawnCorrection(
 }
 
 /**
- * The face a furniture piece was placed against, mirroring `placedPitch` of Nexo 1.29.1. [placement] is the type Nexo
- * stored on the entity, which it only does for furniture with a `placements` section; otherwise the face comes from
- * the `limited_placing` flags: the pitch is 90 for fixed roof furniture, -90 for fixed wall furniture, and 0 for
- * everything else, so non-fixed roof-only furniture is recognised by being roof-limited alone.
+ * The face a furniture piece was placed against, mirroring `placedPitch` and `placedYaw` of Nexo 1.29.1. [placement] is
+ * the type Nexo stored on the entity, which it only does for furniture with a `placements` section and which always
+ * wins; otherwise the face comes from the `limited_placing` flags and the rotation:
+ * - fixed-transform furniture: the pitch is 90 on a ceiling (roof, face DOWN), -90 on the floor (floor, face UP, or a
+ *   horizontal face without wall limit) and 0 otherwise, and the yaw is `90 * face.ordinal - 180` on a wall, so a
+ *   pitch of 0 on wall furniture means a wall and its yaw names the face;
+ * - non-fixed furniture: the pitch is always 0 and the yaw is the player's rotation, so only furniture limited to a
+ *   single surface is recognised. Wall-only furniture gets the face of that rotation, which may be the wrong or the
+ *   opposite wall; [invertSpawnCorrection] is unaffected because non-fixed furniture returns the plain position.
+ * Anything else is UP. A fixed floor piece without wall limit on a horizontal face (pitch -90) also maps to UP, which
+ * is equivalent for non-wall furniture: `correctedSpawnLocation` treats UP and such a horizontal face the same unless
+ * the furniture is wall-limited.
  */
 internal fun deriveFace(
-    placement: String?, wall: Boolean, roof: Boolean, floor: Boolean, pitch: Float, yaw: Float
+    placement: String?, wall: Boolean, roof: Boolean, floor: Boolean, fixed: Boolean, pitch: Float, yaw: Float
 ): BlockFace {
     fun horizontal() = when (Math.floorMod(Math.round(yaw / 90f), 4)) {
         0 -> BlockFace.SOUTH
@@ -72,8 +80,14 @@ internal fun deriveFace(
         "WALL" -> horizontal()
         "FLOOR" -> BlockFace.UP
         else -> when {
-            roof && (pitch >= 45f || !wall && !floor) -> BlockFace.DOWN
-            wall && (pitch <= -45f && !floor || !roof && !floor) -> horizontal()
+            fixed -> when {
+                pitch >= 45f -> BlockFace.DOWN
+                pitch <= -45f -> BlockFace.UP
+                wall -> horizontal()
+                else -> BlockFace.UP
+            }
+            roof && !wall && !floor -> BlockFace.DOWN
+            wall && !roof && !floor -> horizontal()
             else -> BlockFace.UP
         }
     }
@@ -144,12 +158,13 @@ private object RealNexoFurnitureApi : NexoFurnitureApi {
     override fun isSeat(entity: Entity): Boolean = FurnitureSeat.isSeat(entity)
 
     override fun placementFace(display: ItemDisplay): BlockFace {
-        val limited = NexoFurniture.furnitureMechanic(display as Entity)?.limitedPlacing
+        val mechanic = NexoFurniture.furnitureMechanic(display as Entity)
+        val limited = mechanic?.limitedPlacing
         val location = display.location
         return deriveFace(
             FurniturePlacement.placementType(display)?.name,
             limited?.isWall == true, limited?.isRoof == true, limited?.isFloor == true,
-            location.pitch, location.yaw
+            mechanic?.properties?.isFixedTransform == true, location.pitch, location.yaw
         )
     }
 

@@ -306,19 +306,53 @@ class NexoFurnitureHandlerTest {
     }
 
     @Test
-    fun `derives the face from limited placing when nexo stored no placement type`() {
-        // roof-only, with and without the fixed-transform pitch
-        assertEquals(BlockFace.DOWN, deriveFace(null, wall = false, roof = true, floor = false, pitch = 0f, yaw = 0f))
-        assertEquals(BlockFace.DOWN, deriveFace(null, wall = false, roof = true, floor = true, pitch = 90f, yaw = 0f))
-        // wall-only, yaw 90 faces west
-        assertEquals(BlockFace.WEST, deriveFace(null, wall = true, roof = false, floor = false, pitch = 0f, yaw = 90f))
-        assertEquals(BlockFace.NORTH, deriveFace(null, wall = true, roof = true, floor = false, pitch = -90f, yaw = 180f))
-        // floor furniture, unlimited furniture and a mixed one placed flat
-        assertEquals(BlockFace.UP, deriveFace(null, wall = false, roof = false, floor = true, pitch = 0f, yaw = 0f))
-        assertEquals(BlockFace.UP, deriveFace(null, wall = false, roof = false, floor = false, pitch = 0f, yaw = 0f))
-        assertEquals(BlockFace.UP, deriveFace(null, wall = true, roof = true, floor = true, pitch = 0f, yaw = 0f))
-        // a stored placement type wins
-        assertEquals(BlockFace.UP, deriveFace("FLOOR", wall = false, roof = true, floor = false, pitch = 0f, yaw = 0f))
+    fun `derives the face of fixed furniture from nexo's pitch and yaw`() {
+        fun face(wall: Boolean, roof: Boolean, floor: Boolean, pitch: Float, yaw: Float) =
+            deriveFace(null, wall, roof, floor, fixed = true, pitch = pitch, yaw = yaw)
+        // roof furniture on a ceiling
+        assertEquals(BlockFace.DOWN, face(wall = false, roof = true, floor = false, pitch = 90f, yaw = 0f))
+        assertEquals(BlockFace.DOWN, face(wall = false, roof = true, floor = true, pitch = 90f, yaw = 0f))
+        // wall+roof on a north wall: pitch 0, yaw 90 * ordinal - 180
+        assertEquals(BlockFace.NORTH, face(wall = true, roof = true, floor = false, pitch = 0f, yaw = 180f))
+        // wall+floor on a wall, and on the floor
+        assertEquals(BlockFace.WEST, face(wall = true, roof = false, floor = true, pitch = 0f, yaw = 90f))
+        assertEquals(BlockFace.EAST, face(wall = true, roof = false, floor = true, pitch = 0f, yaw = -90f))
+        assertEquals(BlockFace.UP, face(wall = true, roof = false, floor = true, pitch = -90f, yaw = 33f))
+        // wall+roof+floor on a wall
+        assertEquals(BlockFace.SOUTH, face(wall = true, roof = true, floor = true, pitch = 0f, yaw = 0f))
+        // wall-only on a wall
+        assertEquals(BlockFace.WEST, face(wall = true, roof = false, floor = false, pitch = 0f, yaw = 90f))
+        // floor furniture on the floor
+        assertEquals(BlockFace.UP, face(wall = false, roof = false, floor = true, pitch = -90f, yaw = 0f))
+        assertEquals(BlockFace.UP, face(wall = false, roof = false, floor = false, pitch = 0f, yaw = 0f))
+    }
+
+    @Test
+    fun `derives the face of non-fixed furniture from single flags only`() {
+        fun face(wall: Boolean, roof: Boolean, floor: Boolean, yaw: Float = 0f) =
+            deriveFace(null, wall, roof, floor, fixed = false, pitch = 0f, yaw = yaw)
+        assertEquals(BlockFace.DOWN, face(wall = false, roof = true, floor = false))
+        assertEquals(BlockFace.WEST, face(wall = true, roof = false, floor = false, yaw = 90f))
+        assertEquals(BlockFace.UP, face(wall = false, roof = false, floor = true))
+        assertEquals(BlockFace.UP, face(wall = false, roof = false, floor = false))
+        // mixed flags
+        assertEquals(BlockFace.UP, face(wall = true, roof = true, floor = false, yaw = 90f))
+        assertEquals(BlockFace.UP, face(wall = true, roof = false, floor = true, yaw = 90f))
+        assertEquals(BlockFace.UP, face(wall = false, roof = true, floor = true))
+        assertEquals(BlockFace.UP, face(wall = true, roof = true, floor = true, yaw = 90f))
+    }
+
+    @Test
+    fun `a stored placement type wins over the derived face`() {
+        assertEquals(
+            BlockFace.UP, deriveFace("FLOOR", wall = false, roof = true, floor = false, fixed = true, pitch = 90f, yaw = 0f)
+        )
+        assertEquals(
+            BlockFace.DOWN, deriveFace("ROOF", wall = true, roof = false, floor = false, fixed = false, pitch = 0f, yaw = 0f)
+        )
+        assertEquals(
+            BlockFace.EAST, deriveFace("WALL", wall = false, roof = false, floor = true, fixed = true, pitch = -90f, yaw = -90f)
+        )
     }
 
     @Test
