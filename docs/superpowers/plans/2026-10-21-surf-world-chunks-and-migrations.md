@@ -710,6 +710,18 @@ class SurfWorldAccess(world: SurfWorldImpl, handlers: List<ChunkDataHandler<*>>,
 
     The conversion is a raw stage because the records are neutral. That proves migrations run without the source plugin's API.
 
+12. **`pipeline-real-polar-calls`.** These three things cannot be unit-tested, so this scenario checks them on the real server.
+    - Polar's own autosave is off for surf worlds. After waiting longer than Polar's default autosave interval, Polar has not written anything on its own.
+    - A save goes through our access. A chunk section survives a save and a reload.
+    - World-level `world.data` survives a save and a reload.
+13. **`generated-chunk-survives-unload`.**
+    - Create an empty world. Load chunk (40, 40), which is far away, so it is generated, not loaded from Polar.
+    - Place a block, an armor stand and a custom section in it.
+    - Force the chunk to unload, then save, unload the world and load it again.
+    - Report what Polar actually does. Either the chunk survives with everything, or it is dropped.
+    - **If it is dropped, the scenario FAILS with a clear message.** That is a data-loss gap to raise, not to hide.
+    - Also record whether unloading the world logs our "left out of saves" warning for every chunk. Unloading a world should not produce that noise. If it does, fix the listener so it ignores chunks of a world that is being unloaded.
+
 **CI workflow (`integration-test.yml`):**
 - Triggers on pull requests and pushes to `feat/**` and `version/**`. It is a separate workflow and leaves `publish.yml` untouched.
 - Java 25, with Gradle caching.
