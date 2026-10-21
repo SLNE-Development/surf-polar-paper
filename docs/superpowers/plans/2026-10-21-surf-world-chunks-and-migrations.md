@@ -534,6 +534,15 @@ class SurfWorldAccess(world: SurfWorldImpl, handlers: List<ChunkDataHandler<*>>,
 
 **`saveWorld`:** `Polar.saveWorld(bukkitWorld, polarWorld.chunks(), BytesPolarSource(), access, BlockSelector.ALL, config)`, or whichever overload uses our access. It writes `world.data` into the Polar world user data and returns the bytes.
 
+**Facts learned in Tasks 6 and 7. These are binding and override the text above where they conflict:**
+- **Load.** Polar 2.3.1 calls only `PolarWorldAccess.loadChunkData`, on the tick thread after `ChunkUtils.insertChunk`. `SurfWorldAccess` restores everything there. `populateChunkData` is never called.
+- **Saving has two phases.** Use `SurfWorldAccess.beginSaveRound()`, then `prepareChunkSave(chunk)` for every loaded chunk on that chunk's owning region thread (the Folia region scheduler; on Paper, the main thread), then `Polar.saveWorld(...)`. `saveChunkData` runs on the ForkJoin pool, only writes the prepared bytes, and never throws. Failures in prepare fail the save, and the existing storage stays untouched.
+- **World-level data.** `Polar.saveWorld` writes back the world userData that the generator captured at load (`PolarGenerator.getUserData()`). Our pipeline must therefore put the encoded `world.data` into the saved Polar world's userData itself. Either set it on the generator's userData before the save, or post-process the saved `PolarWorld` before `PolarWriter.write`; check which of the two works.
+- **Polar's own autosave.** It must be off for surf worlds, through `Polar.stopAutoSaveTask` and/or a Polar `Config` with autosave disabled. Polar's autosave calls `Polar.saveWorld` directly and would skip `prepareChunkSave`.
+- **One `LiveChunkRegistry` and one `SurfWorldAccess` per world.** Polar chunks are `NoUnloadLevelChunk`, so verify whether they unload at all. If they can unload, call `LiveChunkRegistry.remove(x, z)` after their data has been written into the Polar chunk.
+- **Polar drops all-air chunks on save, sections included.** Document this in the README as a known limitation.
+- **Clean up after Task 6.** Remove the `sourceSets.test { kotlin.exclude(...) }` for `PlatformWorldBridgePaperTest`/`WorldCommandTest`, and remove every `TODO("Task 8")` stub.
+
 **Commands:**
 - `list` and `join` read across `ApiInstances.all`. For `list`, use the storage of the owning instance, or any instance, for unowned game modes.
 - `create`, `load`, `unload` and `delete` look up `ApiInstances.ownerOf(gameMode)`. If there is none, they fail with the message `No plugin owns game mode '<id>'`.
