@@ -173,7 +173,12 @@ class CraftEngineFurnitureHandler internal constructor(
         { chunk, task -> plugin.server.regionScheduler.run(plugin, chunk.world, chunk.x, chunk.z) { task.run() } },
         { Bukkit.getPluginManager().isPluginEnabled("CraftEngine") },
         RealCraftEngineFurnitureApi,
-        { chunk -> Bukkit.getWorld(chunk.world.uid) === chunk.world && chunk.world.isChunkLoaded(chunk.x, chunk.z) }
+        // The entities of a chunk load after its blocks, and furniture placed before that is not registered by the
+        // furniture plugin when its entities load
+        { chunk ->
+            Bukkit.getWorld(chunk.world.uid) === chunk.world && chunk.world.isChunkLoaded(chunk.x, chunk.z) &&
+                chunk.isEntitiesLoaded
+        }
     )
 
     private val log = logger()
