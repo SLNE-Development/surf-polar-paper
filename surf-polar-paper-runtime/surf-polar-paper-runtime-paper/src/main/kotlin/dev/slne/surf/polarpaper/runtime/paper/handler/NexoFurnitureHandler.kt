@@ -292,14 +292,19 @@ class NexoFurnitureHandler internal constructor(
         if (value.isEmpty()) return
         val entry = Pending(value.toMutableList())
         pending[key(chunk)] = entry
-        run(chunk, Runnable { placePending(chunk, entry) })
+        run(chunk, Runnable { placePending(chunk, entry, 1) })
     }
 
-    private fun placePending(chunk: Chunk, entry: Pending) {
+    private fun placePending(chunk: Chunk, entry: Pending, attempt: Int) {
         // The chunk unloaded, or unloaded and reloaded with a newer entry, since this task was queued
         if (pending[key(chunk)] !== entry) return
 
         if (!chunkLive(chunk)) {
+            // A chunk is handed to the load hook before it is fully loaded, so it can take a few ticks to become live
+            if (attempt < MAX_ATTEMPTS) {
+                run(chunk, Runnable { placePending(chunk, entry, attempt + 1) })
+                return
+            }
             log.atWarning().log(
                 "Chunk %s, %s of world %s is not loaded any more, keeping its nexo furniture pending",
                 chunk.x, chunk.z, chunk.world.name
@@ -352,4 +357,9 @@ class NexoFurnitureHandler internal constructor(
     private fun key(chunk: Chunk) = key(chunk.x, chunk.z)
 
     private fun key(x: Int, z: Int) = (x.toLong() shl 32) or (z.toLong() and 0xFFFFFFFFL)
+
+    private companion object {
+        /** Ticks to wait for a chunk to become live before leaving its records pending. */
+        const val MAX_ATTEMPTS = 200
+    }
 }

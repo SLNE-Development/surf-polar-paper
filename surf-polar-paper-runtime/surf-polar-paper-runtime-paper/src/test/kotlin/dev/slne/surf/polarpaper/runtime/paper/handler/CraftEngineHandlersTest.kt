@@ -280,4 +280,22 @@ class CraftEngineHandlersTest {
         assertNull(placeRecovering({ null }) { null })
         assertTrue(runCatching { placeRecovering({ throw IllegalStateException("x") }) { null } }.isFailure)
     }
+
+    @Test
+    fun `a chunk that is not live yet is retried until it becomes live`() {
+        craftEngine.known = setOf("default:chair")
+        val record = FurnitureRecord("default:chair", 1.5, 64.5, 3.5, 90f, 10f)
+        live = false
+
+        deferred.restore(chunk, listOf(record))
+        queued.removeFirst().run()
+        queued.removeFirst().run()
+        assertTrue(craftEngine.placed.isEmpty())
+
+        live = true
+        queued.removeFirst().run()
+
+        assertEquals(listOf("default:chair"), craftEngine.placed.map { it.id })
+        assertNull(deferred.capture(chunk, emptyList()) { })
+    }
 }

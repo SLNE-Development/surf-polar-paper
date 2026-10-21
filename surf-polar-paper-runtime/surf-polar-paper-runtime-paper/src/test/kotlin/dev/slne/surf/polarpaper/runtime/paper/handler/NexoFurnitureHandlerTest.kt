@@ -373,4 +373,22 @@ class NexoFurnitureHandlerTest {
         assertFalse(NexoFurnitureHandler({ _, _ -> }, { false }, nexo, { true }).isAvailable())
         assertTrue(handler.isAvailable())
     }
+
+    @Test
+    fun `a chunk that is not live yet is retried until it becomes live`() {
+        nexo.known = setOf("oak_chair")
+        val record = FurnitureRecord("oak_chair", 1.5, 64.5, 3.5, 90f, 10f)
+        live = false
+
+        deferred.restore(chunk, listOf(record))
+        queued.removeFirst().run()
+        queued.removeFirst().run()
+        assertTrue(nexo.placed.isEmpty())
+
+        live = true
+        queued.removeFirst().run()
+
+        assertEquals(listOf("oak_chair"), nexo.placed.map { it.id })
+        assertNull(deferred.capture(chunk, emptyList()) { })
+    }
 }
