@@ -23,7 +23,7 @@ fun CommandAPICommand.joinWorldCommand() = subcommand("join") {
         val gameModeIdentifier: String by arguments
         val worldUuid: UUID by arguments
 
-        joinWorld(SurfPolarPaperApi.INSTANCE, player, worldUuid, gameModeIdentifier)
+        joinWorld(TODO("Task 8"), player, worldUuid, gameModeIdentifier)
     }
 }
 
@@ -36,7 +36,7 @@ internal suspend fun joinWorld(
     // loadWorld returns the already loaded world, so joining also works for worlds that are only stored
     val world = loadWorldOrFail(api, worldUuid, gameModeIdentifier)
 
-    val platformWorld = api.getPlatformWorld<World>(world)
+    val platformWorld = TODO("Task 8") as World?
         ?: throw CommandAPI.failWithString("World with UUID '$worldUuid' and game mode '$gameModeIdentifier' is not loaded.")
 
     player.teleportAsync(platformWorld.spawnLocation)

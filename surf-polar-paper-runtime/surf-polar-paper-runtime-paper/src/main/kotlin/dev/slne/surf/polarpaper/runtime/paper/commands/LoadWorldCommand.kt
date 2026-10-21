@@ -24,7 +24,7 @@ fun CommandAPICommand.loadWorldCommand() = subcommand("load") {
         val gameModeIdentifier: String by arguments
         val worldUuid: UUID by arguments
 
-        loadWorld(SurfPolarPaperApi.INSTANCE, player, worldUuid, gameModeIdentifier)
+        loadWorld(TODO("Task 8"), player, worldUuid, gameModeIdentifier)
     }
 }
 

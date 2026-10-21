@@ -22,7 +22,7 @@ fun CommandAPICommand.unloadWorldCommand() = subcommand("unload") {
         val gameModeIdentifier: String by arguments
         val worldUuid: UUID by arguments
 
-        unloadWorld(SurfPolarPaperApi.INSTANCE, player, worldUuid, gameModeIdentifier)
+        unloadWorld(TODO("Task 8"), player, worldUuid, gameModeIdentifier)
     }
 }
 

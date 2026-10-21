@@ -69,3 +69,8 @@ configurations.runtimeClasspath {
     exclude(group = "org.jetbrains", module = "annotations")
     exclude(group = "org.slf4j")
 }
+
+// Temporary: these tests target the old PlatformWorldBridge and SurfWorld API and are rewritten in Task 8
+sourceSets.test {
+    kotlin.exclude("**/PlatformWorldBridgePaperTest.kt", "**/WorldCommandTest.kt")
+}

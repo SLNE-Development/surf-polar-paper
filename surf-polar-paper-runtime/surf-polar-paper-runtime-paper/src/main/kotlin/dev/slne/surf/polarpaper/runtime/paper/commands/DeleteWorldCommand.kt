@@ -8,7 +8,6 @@ import dev.jorel.commandapi.kotlindsl.uuidArgument
 import dev.slne.surf.api.core.messages.adventure.sendText
 import dev.slne.surf.api.paper.command.executors.playerExecutorSuspend
 import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
-import dev.slne.surf.polarpaper.api.world.SurfWorld
 import org.bukkit.entity.Player
 import java.util.*
 
@@ -22,7 +21,7 @@ fun CommandAPICommand.deleteWorldCommand() = subcommand("delete") {
         val gameModeIdentifier: String by arguments
         val worldUuid: UUID by arguments
 
-        deleteWorld(SurfPolarPaperApi.INSTANCE, player, worldUuid, gameModeIdentifier)
+        deleteWorld(TODO("Task 8"), player, worldUuid, gameModeIdentifier)
     }
 }
 
@@ -32,15 +31,5 @@ internal suspend fun deleteWorld(
     worldUuid: UUID,
     gameModeIdentifier: String
 ) {
-    // Worlds that are not loaded can be deleted too, their bytes are not needed for that
-    val world = api.findWorld(worldUuid, gameModeIdentifier)
-        ?: SurfWorld(worldUuid, gameModeIdentifier, ByteArray(0))
-
-    api.deleteWorld(world)
-
-    player.sendText {
-        success("World ")
-        append(world)
-        success(" deleted successfully.")
-    }
+    TODO("Task 8")
 }

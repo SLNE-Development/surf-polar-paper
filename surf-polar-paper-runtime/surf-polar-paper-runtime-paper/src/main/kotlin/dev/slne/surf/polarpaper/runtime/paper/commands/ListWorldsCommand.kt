@@ -49,7 +49,7 @@ fun CommandAPICommand.listWorldsCommand() = subcommand("list") {
         val gameModeIdentifier: String by arguments
         val showLoadedOnly: Boolean? by arguments
 
-        listWorlds(SurfPolarPaperApi.INSTANCE, player, gameModeIdentifier, showLoadedOnly)
+        listWorlds(TODO("Task 8"), player, gameModeIdentifier, showLoadedOnly)
     }
 }
 
