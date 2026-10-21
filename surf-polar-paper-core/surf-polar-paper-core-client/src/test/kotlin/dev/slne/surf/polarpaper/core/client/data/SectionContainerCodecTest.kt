@@ -1,5 +1,7 @@
 package dev.slne.surf.polarpaper.core.client.data
 
+import dev.slne.surf.polarpaper.core.client.utils.CborUtils
+import kotlinx.serialization.Serializable
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -8,6 +10,9 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 
 class SectionContainerCodecTest {
+    @Serializable
+    private class FutureContainer(val formatVersion: Int, val sections: Map<String, Int>)
+
     @Test
     fun `container round-trips sections`() {
         val sections = mapOf("surf:entities" to byteArrayOf(1, 2, 3), "nexo:furniture" to ByteArray(0))
@@ -33,5 +38,14 @@ class SectionContainerCodecTest {
         assertFalse(SectionContainerCodec.isContainer(legacy))
         assertFalse(SectionContainerCodec.isContainer(null))
         assertThrows<IllegalArgumentException> { SectionContainerCodec.decode(legacy) }
+    }
+
+    @Test
+    fun `container with an unsupported format version is rejected`() {
+        // MAGIC + a container claiming format version 2
+        val future = SectionContainerCodec.encode(emptyMap()).copyOfRange(0, 4) +
+            CborUtils.encode(FutureContainer(2, emptyMap()))
+
+        assertThrows<IllegalArgumentException> { SectionContainerCodec.decode(future) }
     }
 }

@@ -27,14 +27,19 @@ object WorldStorageCodec {
     )
 
     fun decode(bytes: ByteArray): DecodedWorld {
-        val storedWorld = CborUtils.decode<StoredWorld>(bytes)
-
-        require(storedWorld.formatVersion == FORMAT_VERSION) {
-            "Unsupported world storage format version ${storedWorld.formatVersion}, expected $FORMAT_VERSION"
+        // Check the format first: an older envelope lacks fields the current one requires,
+        // which would otherwise fail with a misleading "field is required" error.
+        val header = CborUtils.decode<Header>(bytes)
+        require(header.formatVersion == FORMAT_VERSION) {
+            "Unsupported world storage format version ${header.formatVersion}, expected $FORMAT_VERSION"
         }
 
+        val storedWorld = CborUtils.decode<StoredWorld>(bytes)
         return DecodedWorld(storedWorld.worldVersion, storedWorld.worldBytes)
     }
+
+    @Serializable
+    private class Header(val formatVersion: Int)
 
     @Serializable
     private class StoredWorld(

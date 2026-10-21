@@ -48,7 +48,8 @@ class WorldStorageCodecTest {
     fun `rejects format version 1`() {
         val v1 = CborUtils.encode(V1Envelope(1, byteArrayOf(1, 2, 3)))
 
-        assertThrows<IllegalArgumentException> { WorldStorageCodec.decode(v1) }
+        val e = assertThrows<IllegalArgumentException> { WorldStorageCodec.decode(v1) }
+        assertEquals("Unsupported world storage format version 1, expected 2", e.message)
     }
 
     @Test
