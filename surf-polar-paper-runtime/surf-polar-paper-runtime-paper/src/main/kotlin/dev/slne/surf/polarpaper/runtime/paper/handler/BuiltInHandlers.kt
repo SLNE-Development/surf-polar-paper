@@ -11,6 +11,8 @@ import org.bukkit.plugin.Plugin
  * Nexo and CraftEngine handlers are added by their own tasks.
  */
 object BuiltInHandlers {
+    // TODO(Tasks 9, 10): builtIns and plugin are used once the Nexo and CraftEngine handlers exist
+    @Suppress("UNUSED_PARAMETER")
     fun resolve(builtIns: Set<BuiltInHandler>, plugin: Plugin): List<ChunkDataHandler<*>> {
         val handlers = mutableListOf<ChunkDataHandler<*>>()
         // NEXO_FURNITURE and CRAFT_ENGINE have no handlers yet

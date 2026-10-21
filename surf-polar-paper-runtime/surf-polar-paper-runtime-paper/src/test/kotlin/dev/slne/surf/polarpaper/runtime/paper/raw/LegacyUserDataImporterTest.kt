@@ -4,6 +4,7 @@ import dev.slne.surf.polarpaper.api.data.BuiltInData
 import dev.slne.surf.polarpaper.api.data.StoredEntity
 import dev.slne.surf.polarpaper.core.client.data.MapDataSections
 import dev.slne.surf.polarpaper.core.client.data.SectionContainerCodec
+import dev.slne.surf.polarpaper.runtime.paper.fixtures.entityNbt
 import live.minehub.polarpaper.core.userdata.EntityUtil
 import live.minehub.polarpaper.core.util.MemorySegmentWriter
 import live.minehub.polarpaper.core.world.PolarChunk
@@ -28,13 +29,6 @@ class LegacyUserDataImporterTest {
         fun detectVersion() = SharedConstants.tryDetectVersion()
     }
 
-
-    private fun entityNbt(id: String): ByteArray {
-        val tag = CompoundTag().apply { putString("id", id) }
-        val out = ByteArrayOutputStream()
-        NbtIo.write(tag, DataOutputStream(out))
-        return out.toByteArray()
-    }
 
     /** Builds user data the way Polar's EntitiesWorldAccess writes it: version 2, entities, pdc. */
     private fun legacyBytes(pdc: ByteArray): Pair<ByteArray, ByteArray> {

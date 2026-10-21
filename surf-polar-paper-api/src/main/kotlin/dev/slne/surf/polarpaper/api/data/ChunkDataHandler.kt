@@ -13,11 +13,12 @@ interface ChunkDataHandler<T : Any> {
     fun isAvailable(): Boolean = true
 
     /**
-     * Runs on the chunk's region thread while saving. Entities passed to [claim] are not stored
-     * by the entities handler. Returning null stores no section.
+     * Runs on the chunk's owning region thread (the main thread on Paper) while the world is prepared for saving,
+     * before the data is written. Entities passed to [claim] are not stored by the entities handler, and neither
+     * are their passengers. Returning null stores no section.
      */
     fun capture(chunk: Chunk, entities: List<Entity>, claim: (Entity) -> Unit): T?
 
-    /** Runs on the chunk's region thread once the chunk is live. */
+    /** Runs on the tick thread while the chunk is loaded, right after it became live. */
     fun restore(chunk: Chunk, value: T)
 }

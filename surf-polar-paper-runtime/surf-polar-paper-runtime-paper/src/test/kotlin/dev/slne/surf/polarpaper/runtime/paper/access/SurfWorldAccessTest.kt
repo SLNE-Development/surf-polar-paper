@@ -10,7 +10,7 @@ import dev.slne.surf.polarpaper.core.client.data.MapDataSections
 import dev.slne.surf.polarpaper.core.client.data.SectionContainerCodec
 import dev.slne.surf.polarpaper.core.client.world.SurfWorldImpl
 import dev.slne.surf.polarpaper.runtime.paper.handler.EntitiesHandler
-import dev.slne.surf.polarpaper.runtime.paper.handler.EntitiesHandlerTest
+import dev.slne.surf.polarpaper.runtime.paper.fixtures.entityNbt
 import dev.slne.surf.polarpaper.runtime.paper.handler.EntityCodec
 import io.mockk.every
 import io.mockk.mockk
@@ -18,6 +18,7 @@ import io.mockk.verify
 import kotlinx.serialization.builtins.serializer
 import live.minehub.polarpaper.core.util.MemorySegmentWriter
 import net.kyori.adventure.key.Key
+import net.minecraft.world.level.chunk.ChunkAccess
 import org.bukkit.Chunk
 import org.bukkit.Location
 import org.bukkit.World
@@ -74,6 +75,10 @@ class SurfWorldAccessTest {
     private val loadHooks = mutableListOf<(SurfChunk) -> Unit>()
     private val saveHooks = mutableListOf<(SurfChunk) -> Unit>()
 
+    private var existing: ByteArray? = null
+    private var chunkEntities: Array<Entity> = emptyArray()
+    private val chunkAccess = mockk<ChunkAccess>(relaxed = true)
+
     private fun access(vararg handlers: ChunkDataHandler<*>, entities: EntitiesHandler? = null): SurfWorldAccess {
         val settings = polarPaperSettings {
             loadHooks.forEach { onChunkLoad(it) }
@@ -82,7 +87,7 @@ class SurfWorldAccessTest {
         val world = mockk<SurfWorldImpl>(relaxed = true) {
             every { api.settings } returns settings
         }
-        return SurfWorldAccess(world, handlers.toList(), entities, live)
+        return SurfWorldAccess(world, handlers.toList(), entities, live, { chunk }, { existing })
     }
 
     private fun entity() = mockk<Entity>(relaxed = true) {
@@ -90,16 +95,27 @@ class SurfWorldAccessTest {
         every { isPersistent } returns true
     }
 
-    private fun saved(access: SurfWorldAccess, vararg entities: Entity): MapDataSections {
+    private fun write(access: SurfWorldAccess): ByteArray? {
         MemorySegmentWriter(64).use { writer ->
-            access.saveChunk(chunk, arrayOf(*entities), writer)
-            return MapDataSections(SectionContainerCodec.decode(writer.writtenBytes))
+            access.saveChunkData(chunkAccess, emptyMap(), emptyArray(), writer)
+            return writer.writtenBytes.takeIf { it.isNotEmpty() }
         }
     }
 
+    /** Prepares and writes the chunk the way the bridge and Polar do, then decodes what was written. */
+    private fun saved(access: SurfWorldAccess, vararg entities: Entity): MapDataSections {
+        chunkEntities = arrayOf(*entities)
+        every { chunk.entities } returns chunkEntities
+        access.prepareChunkSave(chunk)
+        return MapDataSections(SectionContainerCodec.decode(write(access)))
+    }
+
+    private fun load(access: SurfWorldAccess, bytes: ByteArray?) =
+        access.loadChunkData(bukkitWorld, chunkAccess, bytes)
+
     private val codec = object : EntityCodec {
-        override fun serialize(entity: Entity) = EntitiesHandlerTest.entityNbt("minecraft:pig")
-        override fun spawn(world: World, stored: StoredEntity) {}
+        override fun serialize(entity: Entity): ByteArray? = entityNbt("minecraft:pig")
+        override fun spawn(chunk: Chunk, stored: List<StoredEntity>) {}
     }
 
     @Test
@@ -134,7 +150,7 @@ class SurfWorldAccessTest {
         val bytes = SectionContainerCodec.encode(sections.raw())
 
         val access = access(handler)
-        access.populateChunkData(chunk, bytes)
+        load(access, bytes)
         assertNull(handler.restored)
 
         assertEquals("old", saved(access)[stringType])
@@ -146,7 +162,7 @@ class SurfWorldAccessTest {
         val sections = MapDataSections()
         sections[stringType] = "stored"
 
-        access(handler).populateChunkData(chunk, SectionContainerCodec.encode(sections.raw()))
+        access(handler).let { load(it, SectionContainerCodec.encode(sections.raw())) }
 
         assertEquals("stored", handler.restored)
         assertEquals("stored", live.sections(2, -3)!![stringType])
@@ -164,7 +180,7 @@ class SurfWorldAccessTest {
         val sections = MapDataSections()
         sections[stringType] = "stored"
 
-        access(handler).populateChunkData(chunk, SectionContainerCodec.encode(sections.raw()))
+        access(handler).let { load(it, SectionContainerCodec.encode(sections.raw())) }
 
         assertEquals(listOf("restore", "hook"), log)
         assertEquals(2, hooked!!.x)
@@ -185,7 +201,7 @@ class SurfWorldAccessTest {
         var hookRan = false
         loadHooks += { hookRan = true }
 
-        access(failing, other).populateChunkData(chunk, SectionContainerCodec.encode(sections.raw()))
+        access(failing, other).let { load(it, SectionContainerCodec.encode(sections.raw())) }
 
         assertEquals("b", other.restored)
         assertTrue(hookRan)
@@ -203,13 +219,56 @@ class SurfWorldAccessTest {
     }
 
     @Test
-    fun `a failing save hook propagates`() {
+    fun `a failing save hook fails the prepare`() {
         saveHooks += { throw IllegalStateException("boom") }
+        every { chunk.entities } returns emptyArray()
 
-        val access = access(StringHandler(stringType))
-        MemorySegmentWriter(64).use { writer ->
-            assertThrows(IllegalStateException::class.java) { access.saveChunk(chunk, emptyArray(), writer) }
+        assertThrows(IllegalStateException::class.java) { access(StringHandler(stringType)).prepareChunkSave(chunk) }
+    }
+
+    @Test
+    fun `saveChunkData never throws and falls back to the existing user data`() {
+        existing = byteArrayOf(1, 2, 3)
+        val handler = mockk<ChunkDataHandler<String>> {
+            every { type } returns stringType
+            every { isAvailable() } returns true
+            every { capture(any(), any(), any()) } throws IllegalStateException("boom")
         }
+        val access = access(handler)
+        every { chunk.entities } returns emptyArray()
+        assertThrows(IllegalStateException::class.java) { access.prepareChunkSave(chunk) }
+
+        // Nothing live and nothing prepared: the existing bytes are kept
+        assertArrayEquals(byteArrayOf(1, 2, 3), write(access))
+    }
+
+    @Test
+    fun `saveChunkData does not throw when the writer fails`() {
+        val failing = mockk<MemorySegmentWriter>()
+        every { failing.write(any<ByteArray>()) } throws IllegalStateException("boom")
+        existing = byteArrayOf(1)
+
+        access().saveChunkData(chunkAccess, emptyMap(), emptyArray(), failing)
+    }
+
+    @Test
+    fun `an unprepared live chunk is written as it is`() {
+        val sections = MapDataSections()
+        sections[plainType] = "live"
+        live.put(2, -3, sections)
+
+        assertEquals("live", MapDataSections(SectionContainerCodec.decode(write(access())))[plainType])
+    }
+
+    @Test
+    fun `a passenger of a claimed vehicle is not stored`() {
+        val passenger = entity()
+        val vehicle = entity().also { every { it.passengers } returns listOf(passenger) }
+        val handler = StringHandler(stringType).also { it.toClaim = listOf(vehicle) }
+
+        val result = saved(access(handler, entities = EntitiesHandler(codec)), vehicle, passenger)
+
+        assertNull(result[BuiltInData.ENTITIES])
     }
 
     @Test
@@ -237,14 +296,16 @@ class SurfWorldAccessTest {
     }
 
     @Test
-    fun `the written bytes round trip through populate`() {
+    fun `the written bytes round trip through loadChunkData`() {
         val handler = StringHandler(stringType)
-        MemorySegmentWriter(64).use { writer ->
-            val access = access(handler)
-            access.saveChunk(chunk, emptyArray(), writer)
-            val bytes = writer.writtenBytes
-            access.populateChunkData(chunk, bytes)
-            assertArrayEquals(bytes, SectionContainerCodec.encode(live.sections(2, -3)!!.raw()))
-        }
+        val access = access(handler)
+        every { chunk.entities } returns emptyArray()
+        access.prepareChunkSave(chunk)
+        val bytes = write(access)!!
+
+        load(access, bytes)
+
+        assertArrayEquals(bytes, SectionContainerCodec.encode(live.sections(2, -3)!!.raw()))
+        assertEquals("captured", handler.restored)
     }
 }

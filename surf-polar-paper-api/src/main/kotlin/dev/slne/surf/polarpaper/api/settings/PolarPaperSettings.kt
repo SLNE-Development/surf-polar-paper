@@ -23,7 +23,9 @@ class PolarPaperSettings(
     val dataTypes: List<DataType<*>>,
     /** Null means no autosave, which is the default. */
     val autosaveInterval: Duration?,
+    /** Run on the tick thread while a chunk is loaded, after its handlers restored. */
     val chunkLoadHooks: List<(SurfChunk) -> Unit>,
+    /** Run on the chunk's owning thread while the world is prepared for saving, before the handlers capture. */
     val chunkSaveHooks: List<(SurfChunk) -> Unit>,
 )
 
