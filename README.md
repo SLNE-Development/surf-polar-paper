@@ -94,7 +94,22 @@ Built-in handlers, enabled in the `handlers { }` block:
 |--------------------|---------------------------------------------------------|-----------------------------------------------------------|
 | `entities()`       | `surf:entities`, `surf:chunk-pdc`                       | All non-player entities that no handler claimed, and the chunk's persistent data |
 | `nexoFurniture()`  | `nexo:furniture`                                        | Nexo furniture as neutral records (id, position, rotation, properties) |
-| `craftEngine()`    | `craftengine:furniture`, `craftengine:blocks`           | CraftEngine furniture and custom blocks as neutral records |
+| `craftEngine()`    | `craftengine:furniture`                                 | CraftEngine furniture as neutral records (`craftengine:blocks` is a reserved key, nothing is written to it) |
+
+#### CraftEngine and Polar worlds
+
+CraftEngine custom blocks are real block states, so they persist as plain Polar block states (id and properties) and
+need no section. What a Polar world loses is CraftEngine's own per-chunk data:
+
+- CraftEngine block entities (storage or ticking custom blocks) are inert after a load and their data is not persisted.
+- Constant block renderers are lost unless CraftEngine rebuilds its sections from the block states.
+
+CraftEngine configuration:
+
+- Required: `chunk-system.sync-custom-blocks-on-chunk-load: true`. It rebuilds the sections and renderers from the
+  block states on chunk load. It is a global option only. The furniture handler logs a warning when it is off.
+- Recommended: list the Polar worlds in `chunk-system.blacklisted-worlds`, so stale `<world dir>/craftengine/` region
+  data cannot overwrite Polar block states through `restore-custom-blocks-on-chunk-load`.
 
 The records contain no classes of the furniture plugin, so a later migration can still read `nexo:furniture` when Nexo
 is no longer installed.

@@ -16,7 +16,12 @@ import org.bukkit.plugin.Plugin
  * The Nexo and CraftEngine handlers are stubs when their plugin is not enabled.
  *
  * [BuiltInHandler.CRAFT_ENGINE] enables the furniture handler only. CraftEngine custom blocks are real block states
- * that Polar already stores, so there is no blocks handler and [BuiltInData.CRAFT_ENGINE_BLOCKS] stays unused.
+ * that Polar already stores, so there is no blocks handler and [BuiltInData.CRAFT_ENGINE_BLOCKS] is a reserved key.
+ * Polar worlds lose CraftEngine's per-chunk data: block entities (storage or ticking custom blocks) are inert after a
+ * load and their data is not persisted, and constant renderers are lost unless CraftEngine rebuilds its sections.
+ * CraftEngine needs `chunk-system.sync-custom-blocks-on-chunk-load: true` (global only) for that rebuild, and Polar
+ * worlds should be listed in `chunk-system.blacklisted-worlds` so stale `<world dir>/craftengine/` region data cannot
+ * overwrite Polar's block states. The furniture handler warns once when the sync option is off.
  */
 object BuiltInHandlers {
     fun resolve(builtIns: Set<BuiltInHandler>, plugin: Plugin): List<ChunkDataHandler<*>> {

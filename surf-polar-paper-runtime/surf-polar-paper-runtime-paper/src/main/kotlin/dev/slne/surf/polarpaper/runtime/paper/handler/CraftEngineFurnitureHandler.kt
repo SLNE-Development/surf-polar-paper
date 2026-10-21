@@ -8,6 +8,7 @@ import dev.slne.surf.polarpaper.api.data.FurnitureRecord
 import net.momirealms.craftengine.bukkit.api.CraftEngineFurniture
 import net.momirealms.craftengine.bukkit.entity.furniture.BukkitFurnitureManager
 import net.momirealms.craftengine.core.entity.furniture.FurniturePersistentData
+import net.momirealms.craftengine.core.plugin.config.Config
 import net.momirealms.craftengine.core.util.Key
 import org.bukkit.Bukkit
 import org.bukkit.Chunk
@@ -48,6 +49,15 @@ internal interface CraftEngineFurnitureApi {
      */
     fun place(id: String, location: Location, state: ByteArray?): Entity?
 
+    /**
+     * Applies CraftEngine's invalid furniture mappings to [id]: the mapped id, [id] itself when unmapped, or an empty
+     * string when CraftEngine removes such furniture.
+     */
+    fun resolveId(id: String): String
+
+    /** Whether CraftEngine's `chunk-system.sync-custom-blocks-on-chunk-load` is on. */
+    fun syncCustomBlocks(): Boolean
+
     /** Merges [bytes] from [extraBytes] onto the persistent data of [entity] without clearing it. */
     fun applyExtra(entity: Entity, bytes: ByteArray)
 }
@@ -82,6 +92,11 @@ private object RealCraftEngineFurnitureApi : CraftEngineFurnitureApi {
         return if (copy.isEmpty) null else copy.serializeToBytes()
     }
 
+    override fun resolveId(id: String): String =
+        if (Config.handleInvalidFurniture()) Config.furnitureMappings()[id] ?: id else id
+
+    override fun syncCustomBlocks(): Boolean = Config.syncCustomBlocks()
+
     override fun place(id: String, location: Location, state: ByteArray?): Entity? {
         val definition = CraftEngineFurniture.byId(Key.of(id)) ?: return null
         val data = if (state != null) {
@@ -89,12 +104,29 @@ private object RealCraftEngineFurnitureApi : CraftEngineFurnitureApi {
         } else {
             FurniturePersistentData.ofVariant(definition.anyVariantName())
         }
-        return CraftEngineFurniture.place(location, definition, data, false).bukkitEntity()
+        // CraftEngine spawns the entity before running third-party onPlace code, so a throw or a null result can
+        // still leave a placed piece behind
+        return placeRecovering({ CraftEngineFurniture.place(location, definition, data, false)?.bukkitEntity() }) {
+            location.world.getNearbyEntities(location, 0.01, 0.01, 0.01).firstOrNull { furnitureId(it) == id }
+        }
     }
 
     override fun applyExtra(entity: Entity, bytes: ByteArray) {
         entity.persistentDataContainer.readFromBytes(bytes, false)
     }
+}
+
+/**
+ * Runs [place]; when it throws or returns null, [find] looks for a piece it spawned anyway. Returns the placed entity,
+ * null when nothing was placed, or rethrows when it threw and nothing was spawned.
+ */
+internal fun placeRecovering(place: () -> Entity?, find: () -> Entity?): Entity? {
+    val placed = try {
+        place()
+    } catch (e: Exception) {
+        return find() ?: throw e
+    }
+    return placed ?: find()
 }
 
 /** Records restored into a chunk that are not placed yet. */
@@ -117,6 +149,9 @@ private class PendingFurniture(val records: MutableList<FurnitureRecord>)
  *   anchor type), the source item and the behavior data; passed to CraftEngine on restore.
  * - `pdc`: Base64 of the remaining persistent data of the base entity (data of other plugins); merged back after
  *   placement.
+ *
+ * The record keeps the original id; CraftEngine's invalid furniture mappings are applied when placing, and a mapping
+ * to an empty id drops the record, as CraftEngine would remove the piece.
  *
  * Position and rotation are stored as the exact base entity location: CraftEngine uses the location it is given
  * as is, it does not derive it from a block.
@@ -143,6 +178,21 @@ class CraftEngineFurnitureHandler internal constructor(
 
     private val log = logger()
     private val pending = ConcurrentHashMap<Long, PendingFurniture>()
+
+    init {
+        // Without it CraftEngine's sections and renderers of Polar chunks stay empty
+        val sync = try {
+            craftEngine.syncCustomBlocks()
+        } catch (e: Throwable) {
+            true
+        }
+        if (!sync) {
+            log.atWarning().log(
+                "CraftEngine's chunk-system.sync-custom-blocks-on-chunk-load is false: custom block entities and " +
+                    "renderers in Polar worlds will not be rebuilt on chunk load"
+            )
+        }
+    }
 
     override val type: DataType<List<FurnitureRecord>> = BuiltInData.CRAFT_ENGINE_FURNITURE
 
@@ -195,8 +245,15 @@ class CraftEngineFurnitureHandler internal constructor(
         }
 
         for (record in synchronized(entry.records) { entry.records.toList() }) {
+            val resolved = craftEngine.resolveId(record.id)
+            if (resolved.isEmpty()) {
+                // CraftEngine's own mapping removes this furniture
+                log.atWarning().log("Dropping craftengine furniture %s: CraftEngine maps it to removal", record.id)
+                synchronized(entry.records) { entry.records.remove(record) }
+                continue
+            }
             val entity = try {
-                place(chunk, record)
+                place(chunk, record, resolved)
             } catch (e: Exception) {
                 log.atSevere().withCause(e).log(
                     "Could not place craftengine furniture %s in chunk %s, %s: %s", record.id, chunk.x, chunk.z, e.message
@@ -216,10 +273,10 @@ class CraftEngineFurnitureHandler internal constructor(
     }
 
     /** Places the furniture of [record] and returns its base entity, or null when CraftEngine does not know it. */
-    private fun place(chunk: Chunk, record: FurnitureRecord): Entity? {
+    private fun place(chunk: Chunk, record: FurnitureRecord, id: String): Entity? {
         val location = Location(chunk.world, record.x, record.y, record.z, record.yaw, record.pitch)
         val state = record.properties["data"]?.let { Base64.getDecoder().decode(it) }
-        val entity = craftEngine.place(record.id, location, state)
+        val entity = craftEngine.place(id, location, state)
         if (entity == null) {
             log.atWarning().log("CraftEngine does not know furniture %s at %s, keeping it pending", record.id, location)
         }

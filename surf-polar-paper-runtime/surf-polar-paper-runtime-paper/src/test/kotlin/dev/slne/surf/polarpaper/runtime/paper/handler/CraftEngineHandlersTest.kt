@@ -33,6 +33,7 @@ class CraftEngineHandlersTest {
         val placed = mutableListOf<Place>()
         val appliedExtras = mutableListOf<ByteArray>()
         var known = setOf<String>()
+        val mappings = mutableMapOf<String, String>()
         var failExtra: RuntimeException? = null
         val entity = mockk<Entity>(relaxed = true)
 
@@ -49,6 +50,9 @@ class CraftEngineHandlersTest {
             placed += Place(id, location, state)
             return entity
         }
+
+        override fun resolveId(id: String) = mappings[id] ?: id
+        override fun syncCustomBlocks() = true
 
         override fun applyExtra(entity: Entity, bytes: ByteArray) {
             failExtra?.let { throw it }
@@ -233,5 +237,47 @@ class CraftEngineHandlersTest {
     fun `unavailable without craftengine`() {
         assertFalse(CraftEngineFurnitureHandler({ _, _ -> }, { false }, craftEngine, { true }).isAvailable())
         assertTrue(handler.isAvailable())
+    }
+
+    @Test
+    fun `applies craftengine id mappings and drops records mapped to removal`() {
+        craftEngine.known = setOf("default:new_chair")
+        craftEngine.mappings["default:old_chair"] = "default:new_chair"
+        craftEngine.mappings["default:removed"] = ""
+
+        deferred.restore(
+            chunk,
+            listOf(
+                FurnitureRecord("default:old_chair", 1.5, 64.5, 3.5, 0f, 0f),
+                FurnitureRecord("default:removed", 2.5, 64.5, 3.5, 0f, 0f)
+            )
+        )
+        queued.single().run()
+
+        assertEquals(listOf("default:new_chair"), craftEngine.placed.map { it.id })
+        assertNull(deferred.capture(chunk, emptyList()) { })
+    }
+
+    @Test
+    fun `claims a collider and a seat whose base entity is not in the list`() {
+        val collider = mockk<Entity>(relaxed = true)
+        val seat = mockk<Entity>(relaxed = true)
+        craftEngine.colliders += collider
+        craftEngine.seats += seat
+        val claimed = mutableListOf<Entity>()
+
+        assertNull(handler.capture(chunk, listOf(collider, seat)) { claimed += it })
+
+        assertEquals(listOf(collider, seat), claimed)
+    }
+
+    @Test
+    fun `a piece spawned before onPlace threw or returned null counts as placed`() {
+        val spawned = mockk<Entity>(relaxed = true)
+
+        assertEquals(spawned, placeRecovering({ throw IllegalStateException("onPlace") }) { spawned })
+        assertEquals(spawned, placeRecovering({ null }) { spawned })
+        assertNull(placeRecovering({ null }) { null })
+        assertTrue(runCatching { placeRecovering({ throw IllegalStateException("x") }) { null } }.isFailure)
     }
 }
