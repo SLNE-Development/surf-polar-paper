@@ -155,6 +155,12 @@ world stays as it was. After the migrations the world is saved at the new versio
 ### Known limitations
 
 - Polar drops chunks that only contain air when it saves, including their data sections. Data in an all-air chunk is lost.
+- Polar only writes chunks that are loaded when the save runs. A chunk that is not loaded then is left out of the save
+  and logged. Chunks that Polar loaded stay loaded, so this only concerns chunks that were unloaded by other means.
+- World user data that is not written by this plugin (Polar's own schematic offset) is dropped on the first save.
+- Plugins that own game modes must `depend` or `softdepend` on Nexo and CraftEngine when they use the furniture
+  handlers, so they are disabled before those plugins: on shutdown the worlds are saved while the owning plugin is
+  disabled, and the furniture entities must still exist then. On Folia the shutdown save is best effort.
 - Polar's own autosave is switched off for these worlds, because it would skip the preparation that captures the
   handler data. Use the `autosave(...)` setting of the API instance instead.
 

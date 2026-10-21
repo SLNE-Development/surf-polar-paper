@@ -128,6 +128,9 @@ class SurfWorldAccess(
             entities?.capture(chunk, nonPlayers.filter { it !in claimed }, sections, claimed)
 
             prepared[LiveChunkRegistry.key(x, z)] = SectionContainerCodec.encode(sections.raw())
+            // A chunk generated after the world loaded has no entry yet. Registering it once captured keeps its data
+            // reachable for gameplay code and later saves.
+            live.register(x, z, sections)
         } catch (e: Exception) {
             // The round failed, so nothing prepared so far may be written by a later save
             prepared.clear()

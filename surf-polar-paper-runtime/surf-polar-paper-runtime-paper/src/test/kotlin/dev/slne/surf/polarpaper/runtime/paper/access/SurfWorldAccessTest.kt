@@ -273,7 +273,8 @@ class SurfWorldAccessTest {
 
         access.beginSaveRound()
 
-        assertArrayEquals(byteArrayOf(4), write(access))
+        // The prepared bytes are gone; the chunk was registered by the prepare, so its live sections are written
+        assertTrue(SectionContainerCodec.isContainer(write(access)))
     }
 
     @Test
@@ -287,7 +288,8 @@ class SurfWorldAccessTest {
         fail = true
 
         assertThrows(IllegalStateException::class.java) { access.prepareChunkSave(chunk) }
-        assertArrayEquals(byteArrayOf(5), write(access))
+        // The first prepare registered the chunk; the failed one left no prepared bytes behind
+        assertTrue(SectionContainerCodec.isContainer(write(access)))
     }
 
     @Test

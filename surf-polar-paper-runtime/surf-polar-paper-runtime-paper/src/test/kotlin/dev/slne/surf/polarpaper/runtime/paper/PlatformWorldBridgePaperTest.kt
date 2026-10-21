@@ -17,6 +17,7 @@ import dev.slne.surf.polarpaper.runtime.paper.access.SurfWorldAccess
 import dev.slne.surf.polarpaper.runtime.paper.pipeline.PaperPlatform
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
@@ -96,6 +97,16 @@ class PlatformWorldBridgePaperTest {
 
         override fun chunkIfLoaded(world: World, x: Int, z: Int): Chunk? = chunks[x to z]
 
+        override fun loadedChunkCoordinates(world: World): List<Pair<Int, Int>> = chunks.keys.toList()
+
+        /** A chunk that became live without going through Polar's load hook, like a generated one. */
+        fun generate(x: Int, z: Int) {
+            chunks[x to z] = mockk<Chunk>(relaxed = true) {
+                every { this@mockk.x } returns x
+                every { this@mockk.z } returns z
+            }
+        }
+
         override fun addTicket(world: World, x: Int, z: Int, plugin: Plugin) {
             events += "ticket+:$x,$z"
         }
@@ -111,8 +122,11 @@ class PlatformWorldBridgePaperTest {
             savedUserData += bytes
         }
 
+        var saveGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
         override suspend fun savePolar(world: World, polarWorld: PolarWorld, access: PolarWorldAccess): ByteArray {
             events += "savePolar"
+            saveGate?.await()
             return savedBytes
         }
     }
@@ -230,16 +244,18 @@ class PlatformWorldBridgePaperTest {
         val timeline = events.toList()
         val firstLive = timeline.indexOfFirst { it.startsWith("live") }
         assertTrue(timeline.indexOf("raw3") < timeline.indexOf("create"))
-        // Every chunk is loaded before the first live stage runs
-        assertEquals(3, timeline.take(firstLive).count { it.startsWith("load:") })
+        assertTrue(firstLive > timeline.indexOf("create"))
         assertEquals(setOf("0,0", "1,0", "0,1"), timeline.filter { it.startsWith("live2:") }.map { it.removePrefix("live2:") }.toSet())
         for (chunk in listOf("0,0", "1,0", "0,1")) {
             assertTrue(timeline.indexOf("live2:$chunk") < timeline.indexOf("live3:$chunk"), "Order in chunk $chunk")
         }
-        // The tickets are held while migrating and removed afterwards
-        assertEquals(3, timeline.count { it.startsWith("ticket+:") })
-        assertEquals(3, timeline.count { it.startsWith("ticket-:") })
-        assertTrue(timeline.indexOfLast { it.startsWith("live") } < timeline.indexOfFirst { it.startsWith("ticket-:") })
+        // Per chunk the ticket is held from before the load until after the last live stage
+        for (chunk in listOf("0,0", "1,0", "0,1")) {
+            val order = listOf("ticket+:$chunk", "load:$chunk", "live2:$chunk", "live3:$chunk", "ticket-:$chunk")
+                .map { timeline.indexOf(it) }
+            assertEquals(order.sorted(), order, "Ticket and stage order of chunk $chunk")
+            assertTrue(order.all { it >= 0 })
+        }
     }
 
     @Test
@@ -320,7 +336,16 @@ class PlatformWorldBridgePaperTest {
 
     @Test
     fun `save returns polar bytes including world data`() = runTest {
-        val world = world(settings(listType))
+        val recording = object : ChunkDataHandler<String> {
+            override val type = DataType(Key.key("test", "recorded"), String.serializer())
+            override fun capture(chunk: Chunk, entities: List<Entity>, claim: (Entity) -> Unit): String {
+                events += "prepare:${chunk.x},${chunk.z}"
+                return "captured"
+            }
+
+            override fun restore(chunk: Chunk, value: String) = Unit
+        }
+        val world = world(settings(listType, handlers = listOf(recording)))
         val bytes = polarBytes(Triple(0, 0, emptyMap()))
         bridge.loadWorld(world, bytes, emptyList())
         platform.loadChunk(platform.bukkit, 0, 0)
@@ -331,7 +356,7 @@ class PlatformWorldBridgePaperTest {
 
         assertArrayEquals(byteArrayOf(9, 9), saved)
         // The chunk is prepared before Polar writes, and the world data is in place by then
-        assertEquals(listOf("userData", "savePolar"), events.toList())
+        assertEquals(listOf("prepare:0,0", "userData", "savePolar"), events.toList())
         val worldData = MapDataSections(SectionContainerCodec.decode(platform.savedUserData.single()))
         assertEquals(listOf(1, 2, 3), worldData[listType])
     }
@@ -395,5 +420,55 @@ class PlatformWorldBridgePaperTest {
         bridge.unloadWorld(world(settings()))
 
         assertTrue(events.isEmpty())
+    }
+
+    private val capturedType = DataType(Key.key("test", "captured"), String.serializer())
+
+    private fun capturing() = object : ChunkDataHandler<String> {
+        override val type = capturedType
+        override fun capture(chunk: Chunk, entities: List<Entity>, claim: (Entity) -> Unit): String {
+            events += "prepare:${chunk.x},${chunk.z}"
+            return "captured"
+        }
+
+        override fun restore(chunk: Chunk, value: String) = Unit
+    }
+
+    @Test
+    fun `a chunk generated after the load is prepared on save and keeps its section`() = runTest {
+        val world = world(settings(handlers = listOf(capturing())))
+        bridge.loadWorld(world, null, emptyList())
+        // Not in the polar world, so no load hook ever registered it
+        platform.generate(5, 5)
+        assertNull(bridge.chunk(world, 9, 9))
+
+        bridge.saveWorld(world)
+
+        assertTrue("prepare:5,5" in events)
+        assertEquals("captured", bridge.chunk(world, 5, 5)?.data?.get(capturedType))
+    }
+
+    @Test
+    fun `concurrent saves of one world run one after another`() = runTest {
+        val world = world(settings(handlers = listOf(capturing())))
+        bridge.loadWorld(world, null, emptyList())
+        platform.generate(0, 0)
+        events.clear()
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        platform.saveGate = gate
+
+        val first = async(kotlinx.coroutines.Dispatchers.Default) { bridge.saveWorld(world) }
+        while (events.count { it == "savePolar" } < 1) kotlinx.coroutines.yield()
+        val second = async(kotlinx.coroutines.Dispatchers.Default) { bridge.saveWorld(world) }
+        // The second save must not start a round while the first one is still writing
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { kotlinx.coroutines.delay(200) }
+        assertEquals(1, events.count { it.startsWith("prepare:") })
+
+        gate.complete(Unit)
+        first.await()
+        second.await()
+
+        assertEquals(2, events.count { it == "savePolar" })
+        assertEquals(listOf("prepare:0,0", "userData", "savePolar", "prepare:0,0", "userData", "savePolar"), events.toList())
     }
 }

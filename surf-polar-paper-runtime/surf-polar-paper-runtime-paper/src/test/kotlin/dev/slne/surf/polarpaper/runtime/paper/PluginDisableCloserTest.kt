@@ -6,6 +6,7 @@ import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -28,7 +29,7 @@ class PluginDisableCloserTest {
     fun `disabling a plugin closes only its instances`() = runTest {
         val own = mockk<SurfPolarPaperApiImpl>(relaxed = true)
         val foreign = mockk<SurfPolarPaperApiImpl>(relaxed = true)
-        val closer = PluginDisableCloser(this) { plugin -> if (plugin === disabled) listOf(own) else listOf(foreign) }
+        val closer = PluginDisableCloser(this, { false }) { plugin -> if (plugin === disabled) listOf(own) else listOf(foreign) }
 
         closer.onPluginDisable(event(disabled))
         closer.awaitPending()
@@ -46,7 +47,7 @@ class PluginDisableCloserTest {
             gate.await()
             finished = true
         }
-        val closer = PluginDisableCloser(this) { listOf(api) }
+        val closer = PluginDisableCloser(this, { false }) { listOf(api) }
 
         closer.onPluginDisable(event(other))
         val waiting = launch { closer.awaitPending() }
@@ -63,11 +64,40 @@ class PluginDisableCloserTest {
     fun `a failing close does not break the event handler`() = runTest {
         val api = mockk<SurfPolarPaperApiImpl>()
         coEvery { api.close() } throws IllegalStateException("cannot save")
-        val closer = PluginDisableCloser(this) { listOf(api) }
+        val closer = PluginDisableCloser(this, { false }) { listOf(api) }
 
         closer.onPluginDisable(event(disabled))
         closer.awaitPending()
 
         coVerify(exactly = 1) { api.close() }
+    }
+
+    @Test
+    fun `while the server stops the instances are closed inside the event without any dispatcher`() {
+        // A scope whose dispatcher never runs anything: a close that is handed to it would never happen
+        val dead = kotlinx.coroutines.CoroutineScope(object : kotlinx.coroutines.CoroutineDispatcher() {
+            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) = Unit
+        })
+        val api = mockk<SurfPolarPaperApiImpl>()
+        var saved = false
+        coEvery { api.close() } coAnswers { saved = true }
+        val closer = PluginDisableCloser(dead, { true }) { listOf(api) }
+
+        closer.onPluginDisable(event(disabled))
+
+        assertTrue(saved)
+    }
+
+    @Test
+    fun `awaitPending gives up after the timeout`() = runTest {
+        val api = mockk<SurfPolarPaperApiImpl>()
+        coEvery { api.close() } coAnswers { kotlinx.coroutines.awaitCancellation() }
+        val closer = PluginDisableCloser(this, { false }) { listOf(api) }
+
+        closer.onPluginDisable(event(disabled))
+        closer.awaitPending(kotlin.time.Duration.parse("1s"))
+
+        coVerify(exactly = 1) { api.close() }
+        coroutineContext.cancelChildren()
     }
 }

@@ -7,21 +7,31 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
+import org.bukkit.Bukkit
 import org.bukkit.event.EventHandler
 import org.bukkit.event.Listener
 import org.bukkit.event.server.PluginDisableEvent
 import org.bukkit.plugin.Plugin
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * Closes the API instances of a plugin that gets disabled, so its worlds are saved and its game modes are freed.
  * Closing only saves, the worlds stay loaded.
  *
- * Closing runs in [scope] and not inline, because saving needs the region threads, which the disabling thread
- * would block. [awaitPending] lets the shutdown of this plugin wait for those closes.
+ * While the server stops, the instances are closed right inside the event, on the disabling thread and without
+ * dispatching anywhere: the main thread no longer ticks then, so nothing that needs a dispatcher could ever run. On
+ * Paper that thread owns every region, so chunks are prepared inline. On Folia this is best effort.
+ *
+ * When a plugin is disabled at runtime, closing runs in [scope] instead, because saving needs the region threads
+ * that a blocked disabling thread would starve. [awaitPending] lets the shutdown of this plugin wait for those closes.
  */
 class PluginDisableCloser(
     private val scope: CoroutineScope,
+    private val isStopping: () -> Boolean = Bukkit::isStopping,
     private val instancesOf: (Plugin) -> List<SurfPolarPaperApiImpl> = ApiInstances::forPlugin
 ) : Listener {
     private val log = logger()
@@ -29,18 +39,41 @@ class PluginDisableCloser(
 
     @EventHandler
     fun onPluginDisable(event: PluginDisableEvent) {
+        val stopping = isStopping()
+
         for (api in instancesOf(event.plugin)) {
-            val job = scope.launch {
-                try {
-                    api.close()
-                } catch (exception: Exception) {
-                    log.atSevere().withCause(exception).log("Failed to close the API of plugin %s", event.plugin.name)
-                }
+            if (stopping) {
+                closeNow(api, event.plugin)
+                continue
             }
+
+            val job = scope.launch { close(api, event.plugin) }
             pending += job
             job.invokeOnCompletion { pending -= job }
         }
     }
 
-    suspend fun awaitPending() = pending.toList().joinAll()
+    private fun closeNow(api: SurfPolarPaperApiImpl, plugin: Plugin) {
+        // runBlocking only runs what the saving resumes into this thread, nothing is handed to a plugin dispatcher
+        runBlocking { close(api, plugin) }
+    }
+
+    private suspend fun close(api: SurfPolarPaperApiImpl, plugin: Plugin) {
+        try {
+            api.close()
+        } catch (exception: Exception) {
+            log.atSevere().withCause(exception).log("Failed to close the API of plugin %s", plugin.name)
+        }
+    }
+
+    /** Waits for the closes of plugins disabled at runtime, at most [timeout], and logs what it gives up on. */
+    suspend fun awaitPending(timeout: Duration = 30.seconds) {
+        val jobs = pending.toList()
+        if (jobs.isEmpty()) return
+
+        if (withTimeoutOrNull(timeout) { jobs.joinAll() } == null) {
+            val abandoned = jobs.count { it.isActive }
+            log.atSevere().log("Gave up waiting for %s API closes after %s, their worlds may not be saved", abandoned, timeout)
+        }
+    }
 }

@@ -87,8 +87,9 @@ class PlatformWorldBridgePaper(
 
     override fun chunk(world: SurfWorldImpl, x: Int, z: Int): SurfChunk? {
         val entry = loaded[world] ?: return null
-        val sections = entry.live.sections(x, z) ?: return null
         val chunk = platform.chunkIfLoaded(entry.bukkit, x, z) ?: return null
+        // A chunk generated after the load has no stored data, but is a live chunk like the others
+        val sections = entry.live.getOrCreate(x, z)
 
         return SurfChunkImpl(world, chunk, sections)
     }

@@ -43,6 +43,9 @@ interface PaperPlatform {
 
     fun chunkIfLoaded(world: World, x: Int, z: Int): Chunk?
 
+    /** Coordinates of the chunks that are loaded in [world] right now. */
+    fun loadedChunkCoordinates(world: World): List<Pair<Int, Int>>
+
     fun addTicket(world: World, x: Int, z: Int, plugin: Plugin)
 
     fun removeTicket(world: World, x: Int, z: Int, plugin: Plugin)
@@ -92,6 +95,9 @@ class BukkitPaperPlatform(
 
     override fun chunkIfLoaded(world: World, x: Int, z: Int): Chunk? = world.getChunkAt(x, z, false)
         .takeIf { it.isLoaded }
+
+    override fun loadedChunkCoordinates(world: World): List<Pair<Int, Int>> =
+        world.loadedChunks.map { it.x to it.z }
 
     override fun addTicket(world: World, x: Int, z: Int, plugin: Plugin) {
         world.addPluginChunkTicket(x, z, plugin)
