@@ -44,6 +44,8 @@ class PolarRawWorld(private val polarWorld: PolarWorld) : RawWorld {
             polarWorld.updateChunkAt(chunk.x, chunk.z, chunk.toPolarChunk())
         }
 
+        // Polar's own world user data (schematic offset, only used by Polar's info and schematic tooling, not for
+        // loading) is replaced once the world has data sections of its own
         val sections = worldData.raw()
         if (sections.isNotEmpty() || SectionContainerCodec.isContainer(polarWorld.userData())) {
             polarWorld.userData(SectionContainerCodec.encode(sections))

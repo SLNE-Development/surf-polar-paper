@@ -1,6 +1,9 @@
 package dev.slne.surf.polarpaper.runtime.paper.raw
 
 import dev.slne.surf.polarpaper.api.data.BuiltInData
+import dev.slne.surf.polarpaper.api.data.DataType
+import kotlinx.serialization.builtins.ByteArraySerializer
+import net.kyori.adventure.key.Key
 import dev.slne.surf.polarpaper.api.migration.RawBlockEntity
 import dev.slne.surf.polarpaper.core.client.data.MapDataSections
 import dev.slne.surf.polarpaper.core.client.data.SectionContainerCodec
@@ -21,6 +24,8 @@ import org.junit.jupiter.api.Test
 
 class PolarRawChunkTest {
     companion object {
+        private val WORLD_KEY = DataType(Key.key("test", "world"), ByteArraySerializer())
+
         // PolarWorld reads the game version when it is created
         @JvmStatic
         @BeforeAll
@@ -130,7 +135,7 @@ class PolarRawChunkTest {
         val rawChunk = rawWorld.chunk(0, 0)!!
         rawChunk.data[BuiltInData.CHUNK_PDC] = byteArrayOf(1, 2, 3)
         rawChunk.setBlock(1, 0, 1, "minecraft:stone")
-        rawWorld.data[BuiltInData.CHUNK_PDC] = byteArrayOf(9)
+        rawWorld.data[WORLD_KEY] = byteArrayOf(9)
         rawWorld.flush()
 
         val stored = world.chunkAt(0, 0)!!
@@ -141,6 +146,70 @@ class PolarRawChunkTest {
 
         assertTrue(SectionContainerCodec.isContainer(world.userData()))
         val worldSections = MapDataSections(SectionContainerCodec.decode(world.userData()))
-        assertArrayEquals(byteArrayOf(9), worldSections[BuiltInData.CHUNK_PDC])
+        assertArrayEquals(byteArrayOf(9), worldSections[WORLD_KEY])
+    }
+
+    @Test
+    fun `editing a block drops stored light so polar relights the chunk`() {
+        // Real light arrays need a server, FULL and EMPTY are the stored-light states that can be built here
+        val sections = Array(24) {
+            PolarSection(arrayOf("minecraft:air"), null, arrayOf("minecraft:plains"), null, LightContent.FULL, null, LightContent.EMPTY, null)
+        }
+        val raw = PolarRawChunk(chunk(sections), minSection)
+
+        raw.setBlock(1, 64, 1, "minecraft:stone")
+
+        val stored = raw.toPolarChunk().sections()
+        assertTrue(stored.all { it.blockLightContent() == LightContent.MISSING && it.skyLightContent() == LightContent.MISSING })
+    }
+
+    @Test
+    fun `replacing every block of a section keeps the palette minimal`() {
+        val raw = PolarRawChunk(chunk(), minSection)
+        raw.setBlock(0, 64, 0, "minecraft:stone")
+        raw.setBlock(1, 64, 0, "minecraft:stone")
+        raw.setBlock(2, 64, 0, "minecraft:dirt")
+
+        for (x in 0..1) raw.setBlock(x, 64, 0, "minecraft:glass")
+
+        val section = raw.toPolarChunk().sections()[(64 shr 4) - minSection]
+        assertEquals(setOf("minecraft:air", "minecraft:dirt", "minecraft:glass"), section.blockPalette().toSet())
+        assertEquals(3, section.blockPalette().size)
+        assertEquals("minecraft:glass", PolarRawChunk(raw.toPolarChunk(), minSection).getBlock(1, 64, 0))
+        assertEquals("minecraft:dirt", PolarRawChunk(raw.toPolarChunk(), minSection).getBlock(2, 64, 0))
+    }
+
+    @Test
+    fun `setBlock on a section with a multi-entry biome palette preserves biomes`() {
+        val biomeData = LongArray(1) { 0b01L }
+        val sections = Array(24) {
+            PolarSection(arrayOf("minecraft:air"), null, arrayOf("minecraft:plains", "minecraft:desert"), biomeData, LightContent.MISSING, null, LightContent.MISSING, null)
+        }
+        val raw = PolarRawChunk(chunk(sections), minSection)
+
+        raw.setBlock(0, 0, 0, "minecraft:stone")
+
+        val section = raw.toPolarChunk().sections()[-minSection]
+        assertEquals(listOf("minecraft:plains", "minecraft:desert"), section.biomePalette().toList())
+        assertArrayEquals(biomeData, section.biomeData())
+    }
+
+    @Test
+    fun `block entities outside the chunk are rejected`() {
+        val raw = PolarRawChunk(chunk(), minSection)
+        raw.blockEntities.add(RawBlockEntity(16, 0, 0, "minecraft:chest", null))
+
+        org.junit.jupiter.api.assertThrows<IllegalArgumentException> { raw.toPolarChunk() }
+    }
+
+    @Test
+    fun `flush leaves a non-container world user data untouched when world sections are empty`() {
+        val world = PolarWorld(minSection.toByte(), 19.toByte(), listOf(chunk()))
+        val polarData = byteArrayOf(5, 6, 7)
+        world.userData(polarData)
+
+        PolarRawWorld(world).apply { chunk(0, 0)!!.setBlock(0, 0, 0, "minecraft:stone") }.flush()
+
+        assertArrayEquals(polarData, world.userData())
     }
 }
