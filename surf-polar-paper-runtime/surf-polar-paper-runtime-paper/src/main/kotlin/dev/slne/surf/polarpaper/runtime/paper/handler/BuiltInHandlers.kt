@@ -13,10 +13,12 @@ import org.bukkit.plugin.Plugin
  * Resolves the built-in handlers enabled in the settings.
  *
  * [BuiltInHandler.ENTITIES] is not a [ChunkDataHandler], so [resolve] never returns it; use [entities] to get it.
- * The Nexo handler is a stub when Nexo is not enabled; the CraftEngine handlers are added by their own task.
+ * The Nexo and CraftEngine handlers are stubs when their plugin is not enabled.
+ *
+ * [BuiltInHandler.CRAFT_ENGINE] enables the furniture handler only. CraftEngine custom blocks are real block states
+ * that Polar already stores, so there is no blocks handler and [BuiltInData.CRAFT_ENGINE_BLOCKS] stays unused.
  */
 object BuiltInHandlers {
-    // TODO(Task 10): CraftEngine has no handler yet
     fun resolve(builtIns: Set<BuiltInHandler>, plugin: Plugin): List<ChunkDataHandler<*>> {
         val handlers = mutableListOf<ChunkDataHandler<*>>()
         if (BuiltInHandler.NEXO_FURNITURE in builtIns) {
@@ -26,8 +28,18 @@ object BuiltInHandlers {
                 UnavailableHandler(BuiltInData.NEXO_FURNITURE)
             }
         }
+        if (BuiltInHandler.CRAFT_ENGINE in builtIns) {
+            handlers += if (Bukkit.getPluginManager().isPluginEnabled("CraftEngine")) {
+                createCraftEngineHandler(plugin)
+            } else {
+                UnavailableHandler(BuiltInData.CRAFT_ENGINE_FURNITURE)
+            }
+        }
         return handlers
     }
+
+    // Separate function so this object does not load a CraftEngine-typed class until CraftEngine is known to be enabled
+    private fun createCraftEngineHandler(plugin: Plugin): ChunkDataHandler<*> = CraftEngineFurnitureHandler(plugin)
 
     // Separate function so this object does not load a Nexo-typed class until Nexo is known to be enabled
     private fun createNexoHandler(plugin: Plugin): ChunkDataHandler<*> = NexoFurnitureHandler(plugin)
