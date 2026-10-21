@@ -1,15 +1,25 @@
 package dev.slne.surf.polarpaper.api
 
 import dev.slne.surf.api.core.util.requiredService
+import dev.slne.surf.polarpaper.api.settings.PolarPaperSettings
+import dev.slne.surf.polarpaper.api.settings.PolarPaperSettingsBuilder
+import dev.slne.surf.polarpaper.api.settings.polarPaperSettings
 import dev.slne.surf.polarpaper.api.world.SurfWorld
 import dev.slne.surf.polarpaper.api.world.WorldInfo
 import it.unimi.dsi.fastutil.objects.ObjectSet
+import org.bukkit.plugin.Plugin
 import org.jetbrains.annotations.UnmodifiableView
 import java.util.*
 
-private val api = requiredService<SurfPolarPaperApi>()
-
+/**
+ * The world API of one plugin. Every plugin creates its own instance with [create] and owns the game modes
+ * declared in its [settings]. All operations only work on those game modes.
+ */
 interface SurfPolarPaperApi {
+    val plugin: Plugin
+    val settings: PolarPaperSettings
+
+    /** The loaded worlds of this instance only. */
     val loadedWorlds: @UnmodifiableView ObjectSet<SurfWorld>
 
     suspend fun listWorlds(
@@ -17,10 +27,16 @@ interface SurfPolarPaperApi {
         showLoadedOnly: Boolean = false
     ): List<WorldInfo>
 
+    /**
+     * Creates and loads a world. [polarBytes] is a Polar template, null creates an empty world.
+     * The world is stamped with the game mode's current version unless [worldVersion] names the version of the
+     * template, in which case the migrations above it run.
+     */
     suspend fun createWorld(
         worldUuid: UUID,
         gameModeIdentifier: String,
-        worldBytes: ByteArray
+        polarBytes: ByteArray? = null,
+        worldVersion: Int? = null
     ): SurfWorld
 
     suspend fun loadWorld(
@@ -41,11 +57,7 @@ interface SurfPolarPaperApi {
         saveChanges: Boolean = true
     )
 
-    suspend fun unloadAllWorlds(
-        saveChanges: Boolean = true,
-        beforeHook: (world: SurfWorld) -> Unit = {},
-        afterHook: (world: SurfWorld) -> Unit = {}
-    )
+    suspend fun unloadAllWorlds(saveChanges: Boolean = true)
 
     suspend fun deleteWorld(world: SurfWorld)
 
@@ -54,9 +66,21 @@ interface SurfPolarPaperApi {
         gameModeIdentifier: String
     ): SurfWorld?
 
-    fun <W> getPlatformWorld(world: SurfWorld): W?
+    /**
+     * Saves and unloads the worlds of this instance, stops autosave and frees its game modes. Safe to call twice.
+     */
+    suspend fun close()
 
-    companion object : SurfPolarPaperApi by api {
-        val INSTANCE get() = api
+    companion object {
+        // Resolved on first use so that loading this class does not need the implementation
+        private val factory by lazy { requiredService<SurfPolarPaperApiFactory>() }
+
+        /**
+         * Creates the API instance of [plugin].
+         *
+         * @throws dev.slne.surf.polarpaper.api.world.GameModeAlreadyOwnedException if a game mode is owned by another plugin
+         */
+        fun create(plugin: Plugin, settings: PolarPaperSettingsBuilder.() -> Unit): SurfPolarPaperApi =
+            factory.create(plugin, polarPaperSettings(settings))
     }
 }

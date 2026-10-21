@@ -1,44 +1,74 @@
 package dev.slne.surf.polarpaper.core.client
 
 import com.github.benmanes.caffeine.cache.Caffeine
-import com.google.auto.service.AutoService
 import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.api.core.util.toObjectSet
 import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
+import dev.slne.surf.polarpaper.api.migration.WorldMigration
+import dev.slne.surf.polarpaper.api.settings.GameModeSettings
+import dev.slne.surf.polarpaper.api.settings.PolarPaperSettings
 import dev.slne.surf.polarpaper.api.world.GameModeIdentifiers
 import dev.slne.surf.polarpaper.api.world.SurfWorld
+import dev.slne.surf.polarpaper.api.world.UnhandledWorldDataException
 import dev.slne.surf.polarpaper.api.world.WorldInfo
+import dev.slne.surf.polarpaper.api.world.WorldMigrationException
+import dev.slne.surf.polarpaper.api.world.WorldVersionTooNewException
 import dev.slne.surf.polarpaper.core.client.lock.DisabledWorldLocks
 import dev.slne.surf.polarpaper.core.client.lock.WorldLocks
+import dev.slne.surf.polarpaper.core.client.migration.MigrationPlanner
 import dev.slne.surf.polarpaper.core.client.storage.StorageProvider
 import dev.slne.surf.polarpaper.core.client.utils.WorldStorageCodec
-import dev.slne.surf.polarpaper.core.common.world.PlatformWorldBridge
+import dev.slne.surf.polarpaper.core.client.world.PlatformWorldBridge
+import dev.slne.surf.polarpaper.core.client.world.SurfWorldImpl
 import dev.slne.surf.polarpaper.core.common.world.WorldCacheKey
-import dev.slne.surf.polarpaper.core.common.world.key
 import it.unimi.dsi.fastutil.objects.ObjectSet
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import org.bukkit.plugin.Plugin
 import org.jetbrains.annotations.UnmodifiableView
 import java.util.*
+import java.util.concurrent.atomic.AtomicBoolean
 
-@AutoService(SurfPolarPaperApi::class)
+/**
+ * The API instance of one plugin. Only worlds of the game modes in [settings] can be used through it.
+ * Create it through [SurfPolarPaperApi.create] so that game mode ownership is claimed.
+ */
 class SurfPolarPaperApiImpl internal constructor(
+    override val plugin: Plugin,
+    override val settings: PolarPaperSettings,
     private val storageProviderSupplier: () -> StorageProvider?,
     private val platformBridgeSupplier: () -> PlatformWorldBridge,
-    private val worldLocksSupplier: () -> WorldLocks = { DisabledWorldLocks }
+    private val worldLocksSupplier: () -> WorldLocks = { DisabledWorldLocks },
+    autosaveScope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 ) : SurfPolarPaperApi {
-    constructor() : this(
-        storageProviderSupplier = { SurfPolarPaperInstance.INSTANCE.storageProvider },
-        platformBridgeSupplier = { PlatformWorldBridge.INSTANCE },
-        worldLocksSupplier = { SurfPolarPaperInstance.INSTANCE.worldLocks }
-    )
-
     private val log = logger()
 
     private val worldCache = Caffeine.newBuilder()
-        .build<WorldCacheKey, SurfWorld>()
+        .build<WorldCacheKey, SurfWorldImpl>()
 
     private val platformBridge get() = platformBridgeSupplier()
     private val worldLocks get() = worldLocksSupplier()
+    private val closed = AtomicBoolean(false)
+
+    private val autosaveJob: Job? = settings.autosaveInterval?.let { interval ->
+        autosaveScope.launch {
+            while (true) {
+                delay(interval)
+                try {
+                    saveAllWorlds()
+                } catch (exception: CancellationException) {
+                    throw exception
+                } catch (exception: Exception) {
+                    log.atSevere().withCause(exception).log("Autosave of plugin ${plugin.name} failed")
+                }
+            }
+        }
+    }
 
     override val loadedWorlds: @UnmodifiableView ObjectSet<SurfWorld>
         get() = worldCache.asMap().values.toObjectSet()
@@ -46,78 +76,90 @@ class SurfPolarPaperApiImpl internal constructor(
     private fun ensureStorageProvider() = storageProviderSupplier()
         ?: throw IllegalStateException("Storage provider is not initialized")
 
-    private suspend fun createWorldPlatform(world: SurfWorld) {
-        try {
-            platformBridge.createWorld(world)
-        } catch (exception: Exception) {
-            throw IllegalStateException(
-                "Failed to create platform world $world",
-                exception
-            )
+    private inline fun <T> withStorageProvider(action: (storageProvider: StorageProvider) -> T): T =
+        action(ensureStorageProvider())
+
+    /** Validates the identifier and that this instance owns the game mode. */
+    private fun requireOwned(gameModeIdentifier: String): GameModeSettings {
+        GameModeIdentifiers.requireValid(gameModeIdentifier)
+
+        return requireNotNull(settings.gameModes[gameModeIdentifier]) {
+            "Game mode '$gameModeIdentifier' is not owned by plugin '${plugin.name}'"
         }
     }
 
-    private suspend fun loadWorldPlatform(world: SurfWorld) {
+    private fun implOf(world: SurfWorld): SurfWorldImpl {
+        require(world is SurfWorldImpl && world.api === this) {
+            "World $world does not belong to the API of plugin '${plugin.name}'"
+        }
+
+        return world
+    }
+
+    private suspend fun loadWorldPlatform(world: SurfWorldImpl, polarBytes: ByteArray?, migrations: List<WorldMigration>) {
         try {
-            platformBridge.loadWorld(world)
+            platformBridge.loadWorld(world, polarBytes, migrations)
+        } catch (exception: CancellationException) {
+            throw exception
         } catch (exception: Exception) {
-            throw IllegalStateException(
-                "Failed to load platform world $world",
-                exception
-            )
+            // These already say what went wrong, wrapping them would hide the type from callers
+            if (exception is WorldMigrationException
+                || exception is UnhandledWorldDataException
+                || exception is WorldVersionTooNewException
+            ) {
+                throw exception
+            }
+
+            throw IllegalStateException("Failed to load platform world $world", exception)
         }
     }
 
-    private suspend fun saveWorldPlatform(world: SurfWorld) {
-        try {
-            platformBridge.saveWorld(world)
-        } catch (exception: Exception) {
-            throw IllegalStateException(
-                "Failed to save platform world $world",
-                exception
-            )
-        }
-    }
-
-    private suspend fun unloadWorldPlatform(world: SurfWorld) {
+    private suspend fun unloadWorldPlatform(world: SurfWorldImpl) {
         try {
             platformBridge.unloadWorld(world)
+        } catch (exception: CancellationException) {
+            throw exception
         } catch (exception: Exception) {
-            throw IllegalStateException(
-                "Failed to unload platform world $world",
-                exception
-            )
+            throw IllegalStateException("Failed to unload platform world $world", exception)
         }
     }
 
-    override fun <W> getPlatformWorld(world: SurfWorld): W? {
-        return platformBridge.getPlatformWorld(world)
-    }
-
-    private inline fun <T> withStorageProvider(action: (storageProvider: StorageProvider) -> T): T {
-        val storageProvider = ensureStorageProvider()
-
-        return action(storageProvider)
+    /** Unloads a world whose load failed. A failure here must not hide the original exception. */
+    private suspend fun discardFailedLoad(world: SurfWorldImpl) {
+        try {
+            platformBridge.unloadWorld(world)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: Exception) {
+            log.atWarning().withCause(exception).log("Failed to unload platform world $world after a failed load")
+        }
+        releaseLock(WorldCacheKey(world.uuid, world.gameModeIdentifier))
     }
 
     override suspend fun createWorld(
         worldUuid: UUID,
         gameModeIdentifier: String,
-        worldBytes: ByteArray
+        polarBytes: ByteArray?,
+        worldVersion: Int?
     ): SurfWorld {
-        GameModeIdentifiers.requireValid(gameModeIdentifier)
+        val gameMode = requireOwned(gameModeIdentifier)
+        val key = WorldCacheKey(worldUuid, gameModeIdentifier)
+        val templateVersion = worldVersion ?: gameMode.currentVersion
+        val world = SurfWorldImpl(worldUuid, gameModeIdentifier, templateVersion, this, platformBridge)
 
-        val world = SurfWorld(worldUuid, gameModeIdentifier, worldBytes)
-
-        worldLocks.lock(world.key())
+        worldLocks.lock(key)
         try {
-            createWorldPlatform(world)
+            val migrations = MigrationPlanner.plan(worldUuid, gameMode, templateVersion)
+
+            loadWorldPlatform(world, polarBytes, migrations)
+            world.version = gameMode.currentVersion
             saveWorld(world)
         } catch (exception: Exception) {
-            releaseLock(world.key())
+            discardFailedLoad(world)
             throw exception
         }
 
+        worldCache.put(key, world)
         log.atInfo().log("Created world $world")
 
         return world
@@ -127,88 +169,110 @@ class SurfPolarPaperApiImpl internal constructor(
         worldUuid: UUID,
         gameModeIdentifier: String
     ): SurfWorld = withStorageProvider { storageProvider ->
-        GameModeIdentifiers.requireValid(gameModeIdentifier)
+        val gameMode = requireOwned(gameModeIdentifier)
 
         val key = WorldCacheKey(worldUuid, gameModeIdentifier)
-        val cacheHit = worldCache.getIfPresent(key)
-
-        if (cacheHit != null) {
-            return cacheHit
-        }
+        worldCache.getIfPresent(key)?.let { return it }
 
         // Locked before reading, so no other server can change the world while it is loaded here
         worldLocks.lock(key)
 
-        val world = try {
+        var world: SurfWorldImpl? = null
+        try {
             val storedBytes = storageProvider.loadWorldBytes(worldUuid, gameModeIdentifier)
                 ?: throw IllegalStateException("World with UUID $worldUuid and game mode $gameModeIdentifier does not exist")
-            val world = SurfWorld(worldUuid, gameModeIdentifier, WorldStorageCodec.decode(storedBytes).worldBytes)
+            val stored = WorldStorageCodec.decode(storedBytes)
+            val migrations = MigrationPlanner.plan(worldUuid, gameMode, stored.worldVersion)
 
-            loadWorldPlatform(world)
-            world
+            val loading = SurfWorldImpl(worldUuid, gameModeIdentifier, stored.worldVersion, this, platformBridge)
+            world = loading
+
+            loadWorldPlatform(loading, stored.worldBytes, migrations)
+            loading.version = gameMode.currentVersion
+
+            // Persist the migrated state right away, so the migrations never have to run twice
+            if (stored.worldVersion != gameMode.currentVersion) {
+                saveWorld(loading)
+            }
         } catch (exception: Exception) {
-            releaseLock(key)
+            if (world != null) {
+                discardFailedLoad(world)
+            } else {
+                releaseLock(key)
+            }
             throw exception
         }
 
-        worldCache.put(key, world)
+        val loaded = checkNotNull(world)
+        worldCache.put(key, loaded)
+        log.atInfo().log("Loaded world $loaded")
 
-        log.atInfo().log("Loaded world $world")
-
-        return world
+        return loaded
     }
 
     override suspend fun saveWorld(
         world: SurfWorld
     ) = withStorageProvider { storageProvider ->
-        GameModeIdentifiers.requireValid(world.gameModeIdentifier)
+        val impl = implOf(world)
+        requireOwned(impl.gameModeIdentifier)
 
         // Without the lock another server may have loaded and changed the world, saving would overwrite that
-        check(worldLocks.isHeld(world.key())) {
-            "Not saving world $world, this server no longer holds its lock"
+        check(worldLocks.isHeld(WorldCacheKey(impl.uuid, impl.gameModeIdentifier))) {
+            "Not saving world $impl, this server no longer holds its lock"
         }
 
-        saveWorldPlatform(world)
+        val polarBytes = try {
+            platformBridge.saveWorld(impl)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: Exception) {
+            throw IllegalStateException("Failed to save platform world $impl", exception)
+        }
 
         storageProvider.writeWorldBytes(
-            world.uuid,
-            world.gameModeIdentifier,
-            WorldStorageCodec.encode(0, world.worldBytes)
+            impl.uuid,
+            impl.gameModeIdentifier,
+            WorldStorageCodec.encode(impl.version, polarBytes)
         )
-        worldCache.put(world.key(), world)
 
-        log.atInfo().log("Saved world $world")
+        log.atInfo().log("Saved world $impl")
     }
 
     override suspend fun unloadWorld(
         world: SurfWorld,
         saveChanges: Boolean
     ) {
+        val impl = implOf(world)
+        val key = WorldCacheKey(impl.uuid, impl.gameModeIdentifier)
+
         if (saveChanges) {
-            saveWorld(world)
+            saveWorld(impl)
         }
 
-        unloadWorldPlatform(world)
-        worldCache.invalidate(world.key())
-        releaseLock(world.key())
+        unloadWorldPlatform(impl)
+        worldCache.invalidate(key)
+        releaseLock(key)
 
-        log.atInfo().log("Unloaded world $world")
+        log.atInfo().log("Unloaded world $impl")
     }
 
     override suspend fun deleteWorld(
         world: SurfWorld
     ) = withStorageProvider { storageProvider ->
-        GameModeIdentifiers.requireValid(world.gameModeIdentifier)
+        requireOwned(world.gameModeIdentifier)
 
         // A world that is not loaded here is locked for the deletion, so it cannot be deleted while loaded elsewhere
-        val key = world.key()
+        val key = WorldCacheKey(world.uuid, world.gameModeIdentifier)
         if (!worldLocks.isHeld(key)) {
             worldLocks.lock(key)
         }
 
         try {
-            unloadWorldPlatform(world)
-            worldCache.invalidate(key)
+            val loaded = worldCache.getIfPresent(key)
+            if (loaded != null) {
+                unloadWorldPlatform(loaded)
+                worldCache.invalidate(key)
+            }
 
             storageProvider.deleteWorldBytes(world.uuid, world.gameModeIdentifier)
         } finally {
@@ -229,21 +293,26 @@ class SurfPolarPaperApiImpl internal constructor(
         }
     }
 
-    override suspend fun unloadAllWorlds(
-        saveChanges: Boolean,
-        beforeHook: (world: SurfWorld) -> Unit,
-        afterHook: (world: SurfWorld) -> Unit
-    ) {
+    override suspend fun unloadAllWorlds(saveChanges: Boolean) {
         forEachLoadedWorld("unload") { world ->
-            beforeHook(world)
             unloadWorld(world, saveChanges)
-            afterHook(world)
         }
     }
 
     override suspend fun saveAllWorlds() {
         forEachLoadedWorld("save") { world ->
             saveWorld(world)
+        }
+    }
+
+    override suspend fun close() {
+        if (!closed.compareAndSet(false, true)) return
+
+        autosaveJob?.cancel()
+        try {
+            unloadAllWorlds(saveChanges = true)
+        } finally {
+            ApiInstances.unregister(this)
         }
     }
 
@@ -273,17 +342,14 @@ class SurfPolarPaperApiImpl internal constructor(
         }
     }
 
-    override fun findWorld(worldUuid: UUID, gameModeIdentifier: String): SurfWorld? {
-        val key = WorldCacheKey(worldUuid, gameModeIdentifier)
-
-        return worldCache.getIfPresent(key)
-    }
+    override fun findWorld(worldUuid: UUID, gameModeIdentifier: String): SurfWorld? =
+        worldCache.getIfPresent(WorldCacheKey(worldUuid, gameModeIdentifier))
 
     override suspend fun listWorlds(
         gameModeIdentifier: String,
         showLoadedOnly: Boolean
     ): List<WorldInfo> {
-        GameModeIdentifiers.requireValid(gameModeIdentifier)
+        requireOwned(gameModeIdentifier)
 
         return if (showLoadedOnly) {
             loadedWorlds

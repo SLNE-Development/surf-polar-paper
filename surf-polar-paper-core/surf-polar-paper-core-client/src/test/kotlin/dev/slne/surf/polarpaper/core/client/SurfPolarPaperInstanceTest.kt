@@ -1,6 +1,6 @@
 package dev.slne.surf.polarpaper.core.client
 
-import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
+
 import dev.slne.surf.polarpaper.core.client.config.PolarPaperConfig
 import dev.slne.surf.polarpaper.core.client.config.WorldLockingConfig
 import dev.slne.surf.polarpaper.core.client.config.storage.PolarPaperStorageConfig
@@ -28,7 +28,7 @@ class SurfPolarPaperInstanceTest {
     @TempDir
     lateinit var dataPath: Path
 
-    private val api = mockk<SurfPolarPaperApi>(relaxed = true)
+    private val api = mockk<SurfPolarPaperApiImpl>(relaxed = true)
 
     private inner class TestInstance(
         override var config: PolarPaperConfig = PolarPaperConfig(
@@ -38,7 +38,7 @@ class SurfPolarPaperInstanceTest {
     ) : SurfPolarPaperInstance() {
         override val dataPath: Path get() = this@SurfPolarPaperInstanceTest.dataPath
         override val serverName = "lobby-1"
-        override val api: SurfPolarPaperApi get() = this@SurfPolarPaperInstanceTest.api
+        override val apis: List<SurfPolarPaperApiImpl> get() = listOf(this@SurfPolarPaperInstanceTest.api)
     }
 
     @Test
@@ -97,22 +97,21 @@ class SurfPolarPaperInstanceTest {
     }
 
     @Test
-    fun `onDisable saves all worlds without unloading them and disconnects`() = runTest {
+    fun `onDisable closes every api instance and disconnects`() = runTest {
         val instance = TestInstance()
         instance.connect()
 
         instance.onDisable()
 
-        coVerify(exactly = 1) { api.saveAllWorlds() }
-        coVerify(exactly = 0) { api.unloadAllWorlds(any(), any(), any()) }
+        coVerify(exactly = 1) { api.close() }
         assertNull(instance.storageProvider)
     }
 
     @Test
-    fun `onDisable disconnects even when saving fails`() = runTest {
+    fun `onDisable disconnects even when closing fails`() = runTest {
         val instance = TestInstance()
         instance.connect()
-        coEvery { api.saveAllWorlds() } throws IllegalStateException("Failed to save 1 of 2 worlds")
+        coEvery { api.close() } throws IllegalStateException("Failed to save 1 of 2 worlds")
 
         assertThrows<IllegalStateException> { instance.onDisable() }
 
