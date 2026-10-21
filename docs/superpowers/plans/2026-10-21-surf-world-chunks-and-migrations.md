@@ -271,6 +271,11 @@ class GameModeOwnership {    // one process-wide instance lives in ApiInstances 
   - `` `equal versions plan nothing` ``
   - `` `plans migrations above the stored version in order` ``: stored 1, current 4, migrations 2 and 4 → `[2, 4]`.
   - `` `gaps are skipped` ``: stored 1, current 3, no migrations → empty.
+  - `` `a world at version 1 plans every migration up to 100 in order` ``:
+    - Migrations are registered in shuffled order: every version from 2 to 100 except 50–59.
+    - Plan from 1 → exactly `(2..100) - (50..59)`, ascending.
+    - Plan from 55 → `60..100`.
+    - Plan from 100 → empty.
   - `` `stored newer than current is refused` ``: asserts the exception fields 5 and 4.
   - `` `a second owner cannot claim a game mode` ``
   - `` `release frees all game modes of an owner` ``
@@ -537,6 +542,10 @@ class SurfWorldAccess(world: SurfWorldImpl, handlers: List<ChunkDataHandler<*>>,
 
 - [ ] **Step 1: Write the failing tests.** Use MockK for `Polar`/`Bukkit` statics, as the existing test does.
   - `` `raw stages run in version order before the platform world is created` ``
+  - `` `a world migrated from 1 to 100 applies all 99 raw stages in order on the same data` ``:
+    - Each migration N appends N to a world-level `DataType<List<Int>>` section.
+    - Afterwards the section equals `(2..100).toList()`.
+    - Migration 100 can see what migration 2 wrote.
   - `` `no force load happens without live stages` ``
   - `` `live stages run for every chunk after all raw stages` ``
   - `` `a section without handler aborts the load and unloads the platform world` ``
@@ -608,3 +617,99 @@ class SurfWorldAccess(world: SurfWorldImpl, handlers: List<ChunkDataHandler<*>>,
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run** the same command. Expected: PASS. Then run `./gradlew build`.
 - [ ] **Step 5: Commit.** `feat(paper): store craftengine furniture and custom blocks as neutral chunk records`
+
+---
+
+### Task 11: Real-server integration tests, locally and in CI
+
+**Files:**
+- Create: module `surf-polar-paper-integration-test`, registered in `settings.gradle.kts`. It is a Paper test plugin with these files:
+  - `IntegrationTestPlugin.kt`
+  - `Scenario.kt`
+  - `scenarios/*.kt`
+  - `ResultWriter.kt`
+- Create: `.github/workflows/integration-test.yml`
+- Modify: `README.md` (how to run it locally, the `NEXO_JAR` variable, what CI covers, and the optional surf-core with the server name fallback)
+- Modify: `runtime-paper/build.gradle.kts`, `runtime-paper/.../SurfPolarPaperInstancePaper.kt`
+- Create: `runtime-paper/.../ServerNameResolver.kt`, plus its test
+
+**Interfaces:**
+- Consumes: the public API only (`SurfPolarPaperApi.create`, `WorldMigration`, `DataType`, `BuiltInHandler`, `BuiltInData`, the exceptions). The test plugin is a normal API consumer and does not use core or runtime internals.
+- Produces: the Gradle task `:surf-polar-paper-integration-test:integrationTest`.
+  1. It builds the plugin jars.
+  2. It starts a real Paper 26.3 server without a console, using run-paper. The surf plugins already apply it, so use or extend the `RunServer` task.
+  3. The server has DISK storage and locking off, so no RabbitMQ is needed.
+  4. Plugins on the server:
+     - surf-polar-paper
+     - the test plugin
+     - polarpaper
+     - CommandAPI
+     - surf-api-paper-server
+     - CraftEngine
+     - Nexo, only if the `NEXO_JAR` env var or the `-PnexoJar=<path>` property points to a jar
+  5. It waits for `results.json`.
+  6. It fails when any scenario failed or the server did not finish within 10 minutes.
+
+**Plugin sources:**
+- polarpaper, CommandAPI and CraftEngine are downloaded from their public release sources: GitHub releases, Modrinth or Hangar, at pinned versions.
+- The surf jars come from `reposilite.slne.dev`.
+- **surf-core-paper becomes an optional dependency** (user decision). Changes in runtime-paper:
+  - Register surf-core as a soft server dependency, keeping its API compileOnly.
+  - `SurfPolarPaperInstancePaper.serverName` resolves the name in this order:
+    1. `SurfCoreApi.getCurrentServerName()` when the surf-core plugin is enabled. Put that call in a separate class so that SurfCore classes are never loaded when the plugin is missing.
+    2. The env var `SURF_POLAR_PAPER_SERVER_NAME`.
+    3. The system property `surf.polarpaper.server-name`.
+    4. Otherwise, fail on enable with a message that names all three sources.
+  - Add a unit test that covers the resolution order.
+  - The integration server runs **without** surf-core-paper and with `SURF_POLAR_PAPER_SERVER_NAME=integration-test`.
+  - Document all of this in the README.
+- **If a required plugin cannot be obtained without credentials, report BLOCKED with the specifics.**
+
+**Test plugin.**
+- Its scenarios run sequentially after startup.
+- Each scenario owns a separate game mode, so its versions and migrations are independent. A scenario that needs different migrations for the same world closes its instance and creates a new one with the new settings. This simulates a plugin update.
+- Each scenario has the result `PASS`, `FAIL` (with the message and stack trace) or `SKIPPED` (with the reason).
+- The plugin writes `results.json` and calls `Bukkit.shutdown()`.
+
+**Scenarios:**
+1. **`entities-and-pdc-round-trip`.** Spawn an armor stand with a PDC value, set a chunk PDC value, save, unload, load. Both survive. No player appears in `surf:entities`.
+2. **`custom-data-type-round-trip`.** A plugin `DataType<List<String>>` set on a chunk and on the world survives save, unload and load.
+3. **`raw-migration-strawberries`.**
+   - At v1, place `minecraft:sweet_berry_bush` blocks.
+   - Reopen at v2 with a raw migration that replaces them with `minecraft:air`.
+   - After load, no berry bush is left and the stored version is 2.
+4. **`migration-chain-1-to-100`.**
+   - Create a world at v1.
+   - Reopen at v100 with migrations for 2..100, leaving gaps at 50..59. Each one appends its version to a world `DataType<List<Int>>`, and every tenth one also changes a block.
+   - Afterwards the list equals `(2..100) - (50..59)` and all block changes are present.
+   - Reload at v100: no migration runs again.
+5. **`live-migration`.**
+   - At v1, spawn pigs in several chunks, including chunks never loaded during this session.
+   - Reopen at v2 with a live migration that removes every pig.
+   - No pig is left in any chunk.
+6. **`newer-world-refused`.** Save at v5, reopen at v4 → `WorldVersionTooNewException`. The stored bytes are unchanged, and the world can be loaded again at v5.
+7. **`failing-migration-leaves-storage-untouched`.** A migration at v3 throws → `WorldMigrationException(toVersion = 3)`. The stored bytes are byte-identical and the world is not loaded.
+8. **`unhandled-section-aborts`.** A world saved with custom type X, reopened with an instance that does not register X → `UnhandledWorldDataException` naming X.
+9. **`craftengine-round-trip`.** Place a CraftEngine furniture and a CraftEngine custom block (use the plugin's built-in default content, or ship a minimal pack in the test plugin's resources), save, unload, load. Both are back, and the furniture exists exactly once.
+10. **`nexo-round-trip`.** The same as scenario 9, with Nexo furniture. SKIPPED without Nexo.
+11. **`nexo-to-craftengine-to-nexo`.** SKIPPED unless both are installed.
+    - At v1 with `nexoFurniture()`, place Nexo furniture A at known positions and rotations.
+    - Reopen at v2 with `craftEngine()` only, plus a migration that converts `nexo:furniture` records into `craftengine:furniture` records through an id mapping table in the test plugin.
+    - Assert that CraftEngine furniture is at the same positions and rotations, and that no Nexo furniture is left.
+    - Reopen at v3 with `nexoFurniture()` only, plus the reverse migration.
+    - Assert that Nexo furniture A is back at the same positions and rotations, that no CraftEngine furniture is left, and that each piece exists exactly once.
+
+    The conversion is a raw stage because the records are neutral. That proves migrations run without the source plugin's API.
+
+**CI workflow (`integration-test.yml`):**
+- Triggers on pull requests and pushes to `feat/**` and `version/**`. It is a separate workflow and leaves `publish.yml` untouched.
+- Java 25, with Gradle caching.
+- It runs `./gradlew :surf-polar-paper-integration-test:integrationTest` without Nexo, so scenarios 10 and 11 report SKIPPED.
+- It uploads `results.json` and the server log as artifacts.
+
+- [ ] **Step 1: Write the scenarios and the harness first.** Run the task locally before Tasks 9 and 10 are fully verified in game, so that the failures show up. Expected: the task runs, the server starts, and `results.json` is written.
+- [ ] **Step 2: Run** `./gradlew :surf-polar-paper-integration-test:integrationTest`, first without `NEXO_JAR` and then with `NEXO_JAR` pointing to the cached `com.nexomc/nexo/1.29.1` jar if it is a runnable plugin jar.
+  - Expected: all non-Nexo scenarios PASS. With Nexo, all 11 PASS.
+  - If the cached Nexo artifact is an API-only jar, note in the report that the Nexo scenarios were only verified as SKIPPED.
+- [ ] **Step 3: Run** `./gradlew build`. It must not start the server: `integrationTest` is not part of `check`. Expected: BUILD SUCCESSFUL.
+- [ ] **Step 4: Commit.** `test: run real-server integration scenarios locally and in ci`
