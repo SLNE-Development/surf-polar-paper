@@ -41,14 +41,18 @@ class SurfWorldAccess(
     private val entities: EntitiesHandler?,
     private val live: LiveChunkRegistry,
     private val bukkitChunkOf: (ChunkAccess) -> Chunk = { CraftChunk(it as LevelChunk) },
-    private val existingUserData: (Chunk) -> ByteArray? = {
-        PolarGenerator.fromWorld(it.world)?.polarWorld?.chunkAt(it.x, it.z)?.userData()
+    /** The user data the Polar world currently holds for a chunk, by chunk coordinates. */
+    private val existingUserData: (Int, Int) -> ByteArray? = { x, z ->
+        PolarGenerator.fromWorld(world.bukkitWorld)?.polarWorld?.chunkAt(x, z)?.userData()
     }
 ) : PolarWorldAccess {
     private val log = logger()
 
     /** Container bytes captured by [prepareChunkSave], waiting for Polar to write them. */
     private val prepared = ConcurrentHashMap<Long, ByteArray>()
+
+    /** Chunks whose stored data could not be decoded; their stored bytes are kept as they are. */
+    private val undecodable = ConcurrentHashMap.newKeySet<Long>()
 
     override fun getPlugin(): Plugin = world.api.plugin
 
@@ -65,11 +69,13 @@ class SurfWorldAccess(
         val sections = try {
             MapDataSections(SectionContainerCodec.decode(userData))
         } catch (e: Exception) {
-            // The chunk is already inserted and cannot be aborted. Not registering it keeps the unreadable bytes
-            // as the stored user data (see the fallback in saveChunkData) instead of overwriting them with nothing.
+            // The chunk is already inserted and cannot be aborted. It is marked so that prepareChunkSave skips it
+            // and saveChunkData falls back to the stored bytes instead of overwriting them with an empty container.
+            undecodable += LiveChunkRegistry.key(x, z)
             log.atSevere().withCause(e).log("Failed to decode the data of chunk %s, %s of %s", x, z, world)
             return
         }
+        undecodable -= LiveChunkRegistry.key(x, z)
         live.put(x, z, sections)
 
         // A live chunk cannot be aborted anymore, so a failing handler is logged and the others still run
@@ -86,6 +92,15 @@ class SurfWorldAccess(
     }
 
     /**
+     * Starts a save round: drops prepared bytes of an earlier round, so a save that was not prepared (Polar's own
+     * autosave, `/polar save`) cannot write stale data. The bridge calls this, then [prepareChunkSave] for every
+     * loaded chunk, then `Polar.saveWorld`.
+     */
+    fun beginSaveRound() {
+        prepared.clear()
+    }
+
+    /**
      * Runs the save hooks and captures every handler, the unclaimed entities and the chunk's persistent data of the
      * live [chunk]. Must run on the chunk's owning region thread (the main thread on Paper), before Polar saves the
      * world. Exceptions propagate so that the save fails cleanly instead of writing incomplete data.
@@ -93,6 +108,10 @@ class SurfWorldAccess(
     fun prepareChunkSave(chunk: Chunk) {
         val x = chunk.x
         val z = chunk.z
+        if (LiveChunkRegistry.key(x, z) in undecodable) {
+            log.atWarning().log("Keeping the stored data of chunk %s, %s of %s: it could not be decoded", x, z, world)
+            return
+        }
         try {
             val sections = live.sections(x, z) ?: MapDataSections()
             val surfChunk = SurfChunkImpl(world, chunk, sections)
@@ -106,10 +125,12 @@ class SurfWorldAccess(
                 if (!handler.isAvailable()) continue
                 capture(handler, chunk, nonPlayers, claim, sections)
             }
-            entities?.capture(chunk, nonPlayers.filter { it !in claimed }, sections)
+            entities?.capture(chunk, nonPlayers.filter { it !in claimed }, sections, claimed)
 
             prepared[LiveChunkRegistry.key(x, z)] = SectionContainerCodec.encode(sections.raw())
         } catch (e: Exception) {
+            // The round failed, so nothing prepared so far may be written by a later save
+            prepared.clear()
             log.atSevere().withCause(e).log("Failed to capture the data of chunk %s, %s of %s", x, z, world)
             throw e
         }
@@ -124,12 +145,12 @@ class SurfWorldAccess(
     ) {
         // Never throws: an exception here would leave Polar's save future uncompleted and hang the world save
         try {
-            val bukkitChunk = bukkitChunkOf(chunk)
             val bytes = try {
-                bytesToWrite(bukkitChunk)
+                bytesToWrite(bukkitChunkOf(chunk))
             } catch (e: Exception) {
-                log.atSevere().withCause(e).log("Failed to write the data of chunk %s, %s of %s", bukkitChunk.x, bukkitChunk.z, world)
-                runCatching { existingUserData(bukkitChunk) }.getOrNull()
+                log.atSevere().withCause(e).log("Failed to write the data of chunk %s, %s of %s", chunk.locX, chunk.locZ, world)
+                // Coordinates come from the chunk itself, so this works even when the bukkit chunk is unavailable
+                runCatching { existingUserData(chunk.locX, chunk.locZ) }.getOrNull()
             }
             if (bytes != null) writer.write(bytes)
         } catch (e: Throwable) {
@@ -141,7 +162,7 @@ class SurfWorldAccess(
         prepared.remove(LiveChunkRegistry.key(chunk.x, chunk.z))?.let { return it }
         // Not prepared: write the live sections as they are, or keep what the Polar world already has
         live.sections(chunk.x, chunk.z)?.let { return SectionContainerCodec.encode(it.raw()) }
-        return existingUserData(chunk)
+        return existingUserData(chunk.x, chunk.z)
     }
 
     private fun claimWithPassengers(entity: Entity, claimed: MutableSet<Entity>) {

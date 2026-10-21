@@ -7,7 +7,9 @@ import dev.slne.surf.polarpaper.core.client.data.MapDataSections
 import live.minehub.polarpaper.core.userdata.EntitySerializer
 import live.minehub.polarpaper.core.world.PolarEntity
 import live.minehub.polarpaper.paper_26_3.EntitySerializerImpl
+import net.minecraft.core.UUIDUtil
 import net.minecraft.nbt.CompoundTag
+import net.minecraft.nbt.ListTag
 import net.minecraft.nbt.NbtIo
 import net.minecraft.world.entity.EntityProcessor
 import net.minecraft.world.entity.EntitySpawnReason
@@ -20,7 +22,10 @@ import org.bukkit.Location
 import org.bukkit.entity.Entity
 import org.bukkit.plugin.Plugin
 import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.util.UUID
 
 /** Turns entities into Polar entity bytes and back. Split from the handler so tests do not need a server. */
 interface EntityCodec {
@@ -91,7 +96,13 @@ class EntitiesHandler internal constructor(private val codec: EntityCodec) {
      * Writes [BuiltInData.ENTITIES] and [BuiltInData.CHUNK_PDC] from the live chunk; empty results remove the section.
      * Runs on the chunk's owning thread.
      */
-    fun capture(chunk: Chunk, unclaimed: List<Entity>, sections: MapDataSections) {
+    fun capture(
+        chunk: Chunk,
+        unclaimed: List<Entity>,
+        sections: MapDataSections,
+        claimed: Collection<Entity> = emptyList()
+    ) {
+        val claimedIds = claimed.mapTo(HashSet()) { it.uniqueId }
         val stored = unclaimed
             // A passenger is stored inside the NBT of its root vehicle
             .filter { it.isPersistent && !it.isInsideVehicle }
@@ -103,7 +114,9 @@ class EntitiesHandler internal constructor(private val codec: EntityCodec) {
                 }
 
                 val location = entity.location
-                StoredEntity(entityType(nbt), location.x, location.y, location.z, location.yaw, location.pitch, nbt)
+                // A vehicle's NBT carries its passengers; one a handler claimed must not be restored a second time
+                val stored = if (claimedIds.isEmpty()) nbt else stripClaimedPassengers(nbt, claimedIds)
+                StoredEntity(entityType(nbt), location.x, location.y, location.z, location.yaw, location.pitch, stored)
             }
         sections[BuiltInData.ENTITIES] = stored.ifEmpty { null }
 
@@ -116,6 +129,37 @@ class EntitiesHandler internal constructor(private val codec: EntityCodec) {
         sections[BuiltInData.CHUNK_PDC]?.let { chunk.persistentDataContainer.readFromBytes(it) }
 
         sections[BuiltInData.ENTITIES]?.takeIf { it.isNotEmpty() }?.let { codec.spawn(chunk, it) }
+    }
+
+    private fun stripClaimedPassengers(nbt: ByteArray, claimed: Set<UUID>): ByteArray {
+        val tag = NbtIo.read(DataInputStream(ByteArrayInputStream(nbt)))
+        if (!stripPassengers(tag, claimed)) return nbt
+
+        val out = ByteArrayOutputStream()
+        NbtIo.write(tag, DataOutputStream(out))
+        return out.toByteArray()
+    }
+
+    /** Removes claimed passengers from [tag], recursively. Returns whether anything was removed. */
+    private fun stripPassengers(tag: CompoundTag, claimed: Set<UUID>): Boolean {
+        val passengers = tag.getListOrEmpty("Passengers").filterIsInstance<CompoundTag>()
+        if (passengers.isEmpty()) return false
+
+        var changed = false
+        val kept = ListTag()
+        for (passenger in passengers) {
+            val id = passenger.getIntArray("UUID").map { UUIDUtil.uuidFromIntArray(it) }.orElse(null)
+            if (id != null && id in claimed) {
+                changed = true
+            } else {
+                if (stripPassengers(passenger, claimed)) changed = true
+                kept.add(passenger)
+            }
+        }
+        if (changed) {
+            if (kept.isEmpty()) tag.remove("Passengers") else tag.put("Passengers", kept)
+        }
+        return changed
     }
 
     private fun entityType(nbt: ByteArray): String =

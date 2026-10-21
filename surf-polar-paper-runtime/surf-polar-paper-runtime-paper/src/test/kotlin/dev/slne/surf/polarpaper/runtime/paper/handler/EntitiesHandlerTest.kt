@@ -7,6 +7,10 @@ import dev.slne.surf.polarpaper.runtime.paper.fixtures.entityNbt
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import net.minecraft.core.UUIDUtil
+import net.minecraft.nbt.CompoundTag
+import net.minecraft.nbt.ListTag
+import net.minecraft.nbt.NbtIo
 import org.bukkit.Chunk
 import org.bukkit.Location
 import org.bukkit.entity.Entity
@@ -15,6 +19,11 @@ import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Test
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.DataOutputStream
+import java.util.UUID
 
 class EntitiesHandlerTest {
     private class FakeCodec : EntityCodec {
@@ -64,6 +73,36 @@ class EntitiesHandlerTest {
         EntitiesHandler(FakeCodec()).capture(chunk, listOf(entity(1.0), entity(1.0, riding = true)), sections)
 
         assertEquals(1, sections[BuiltInData.ENTITIES]!!.size)
+    }
+
+    @Test
+    fun `a claimed passenger is stripped from its vehicle's stored nbt`() {
+        val claimedId = UUID.randomUUID()
+        val keptId = UUID.randomUUID()
+        val vehicle = CompoundTag().apply {
+            putString("id", "minecraft:boat")
+            put("Passengers", ListTag().apply {
+                add(CompoundTag().apply {
+                    putString("id", "minecraft:pig")
+                    putIntArray("UUID", UUIDUtil.uuidToIntArray(claimedId))
+                })
+                add(CompoundTag().apply {
+                    putString("id", "minecraft:cow")
+                    putIntArray("UUID", UUIDUtil.uuidToIntArray(keptId))
+                })
+            })
+        }
+        val out = ByteArrayOutputStream()
+        NbtIo.write(vehicle, DataOutputStream(out))
+        val codec = FakeCodec().also { it.result = out.toByteArray() }
+        val claimed = mockk<Entity>(relaxed = true) { every { uniqueId } returns claimedId }
+        val sections = MapDataSections()
+
+        EntitiesHandler(codec).capture(chunk, listOf(entity(1.0)), sections, listOf(claimed))
+
+        val stored = NbtIo.read(DataInputStream(ByteArrayInputStream(sections[BuiltInData.ENTITIES]!![0].nbt)))
+        val passengers = stored.getListOrEmpty("Passengers").filterIsInstance<CompoundTag>()
+        assertEquals(listOf("minecraft:cow"), passengers.map { it.getStringOr("id", "") })
     }
 
     @Test

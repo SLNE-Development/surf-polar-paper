@@ -76,6 +76,7 @@ class SurfWorldAccessTest {
     private val saveHooks = mutableListOf<(SurfChunk) -> Unit>()
 
     private var existing: ByteArray? = null
+    private var chunkOf: (ChunkAccess) -> Chunk = { chunk }
     private var chunkEntities: Array<Entity> = emptyArray()
     private val chunkAccess = mockk<ChunkAccess>(relaxed = true)
 
@@ -87,7 +88,7 @@ class SurfWorldAccessTest {
         val world = mockk<SurfWorldImpl>(relaxed = true) {
             every { api.settings } returns settings
         }
-        return SurfWorldAccess(world, handlers.toList(), entities, live, { chunk }, { existing })
+        return SurfWorldAccess(world, handlers.toList(), entities, live, chunkOf, { _, _ -> existing })
     }
 
     private fun entity() = mockk<Entity>(relaxed = true) {
@@ -249,6 +250,52 @@ class SurfWorldAccessTest {
         existing = byteArrayOf(1)
 
         access().saveChunkData(chunkAccess, emptyMap(), emptyArray(), failing)
+    }
+
+    @Test
+    fun `a chunk whose data cannot be decoded keeps its stored bytes on save`() {
+        existing = byteArrayOf(9, 9)
+        val access = access(StringHandler(stringType))
+        load(access, byteArrayOf(0x53, 0x55, 0x52, 0x46, 0x01))
+        every { chunk.entities } returns emptyArray()
+
+        access.prepareChunkSave(chunk)
+
+        assertArrayEquals(byteArrayOf(9, 9), write(access))
+    }
+
+    @Test
+    fun `beginSaveRound drops prepared bytes of an earlier round`() {
+        existing = byteArrayOf(4)
+        val access = access(StringHandler(stringType))
+        every { chunk.entities } returns emptyArray()
+        access.prepareChunkSave(chunk)
+
+        access.beginSaveRound()
+
+        assertArrayEquals(byteArrayOf(4), write(access))
+    }
+
+    @Test
+    fun `a failed prepare clears the prepared bytes`() {
+        existing = byteArrayOf(5)
+        var fail = false
+        saveHooks += { if (fail) throw IllegalStateException("boom") }
+        val access = access(StringHandler(stringType))
+        every { chunk.entities } returns emptyArray()
+        access.prepareChunkSave(chunk)
+        fail = true
+
+        assertThrows(IllegalStateException::class.java) { access.prepareChunkSave(chunk) }
+        assertArrayEquals(byteArrayOf(5), write(access))
+    }
+
+    @Test
+    fun `saveChunkData falls back to the existing data when the bukkit chunk is unavailable`() {
+        existing = byteArrayOf(6)
+        chunkOf = { throw IllegalStateException("not a level chunk") }
+
+        assertArrayEquals(byteArrayOf(6), write(access()))
     }
 
     @Test
