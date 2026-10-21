@@ -60,6 +60,8 @@ abstract class SurfPolarPaperInstance {
     @OverridingMethodsMustInvokeSuper
     open suspend fun onDisable() {
         try {
+            // close() only saves: the server discards its worlds when it stops, and worlds with players in them
+            // cannot be unloaded at this point. The locks are released by disconnect().
             closeAllApis()
         } finally {
             disconnect()

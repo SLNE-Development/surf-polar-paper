@@ -67,7 +67,9 @@ interface SurfPolarPaperApi {
     ): SurfWorld?
 
     /**
-     * Saves and unloads the worlds of this instance, stops autosave and frees its game modes. Safe to call twice.
+     * Stops autosave, saves the worlds of this instance and frees its game modes. The worlds stay loaded, because
+     * at shutdown the server has already closed its worlds and worlds with players cannot be unloaded.
+     * Safe to call twice.
      */
     suspend fun close()
 

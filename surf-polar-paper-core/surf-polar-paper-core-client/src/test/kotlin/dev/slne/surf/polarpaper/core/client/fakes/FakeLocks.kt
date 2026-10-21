@@ -1,4 +1,4 @@
-package dev.slne.surf.polarpaper.core.client
+package dev.slne.surf.polarpaper.core.client.fakes
 
 import dev.slne.surf.polarpaper.core.client.lock.WorldLocks
 import dev.slne.surf.polarpaper.core.common.world.WorldCacheKey

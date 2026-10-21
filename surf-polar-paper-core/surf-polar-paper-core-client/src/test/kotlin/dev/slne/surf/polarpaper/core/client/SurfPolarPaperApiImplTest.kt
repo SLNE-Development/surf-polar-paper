@@ -6,6 +6,7 @@ import dev.slne.surf.polarpaper.api.settings.polarPaperSettings
 import dev.slne.surf.polarpaper.api.world.GameModeAlreadyOwnedException
 import dev.slne.surf.polarpaper.api.world.WorldInfo
 import dev.slne.surf.polarpaper.api.world.WorldVersionTooNewException
+import dev.slne.surf.polarpaper.core.client.fakes.FakeLocks
 import dev.slne.surf.polarpaper.core.client.fakes.FakePlatformWorldBridge
 import dev.slne.surf.polarpaper.core.client.fakes.InMemoryStorageProvider
 import dev.slne.surf.polarpaper.core.client.utils.WorldStorageCodec
@@ -13,7 +14,10 @@ import dev.slne.surf.polarpaper.core.client.world.SurfWorldImpl
 import dev.slne.surf.polarpaper.core.common.world.WorldCacheKey
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runTest
 import org.bukkit.plugin.Plugin
@@ -213,7 +217,7 @@ class SurfPolarPaperApiImplTest {
     }
 
     @Test
-    fun `close saves and unloads own worlds and frees the game modes`() = runTest {
+    fun `close saves own worlds without unloading them and frees the game modes`() = runTest {
         val factory = SurfPolarPaperApiFactoryImpl()
         val created = factory.create(plugin, settings()) as SurfPolarPaperApiImpl
         val closing = SurfPolarPaperApiImpl(plugin, settings(), { storage }, { bridge })
@@ -227,10 +231,66 @@ class SurfPolarPaperApiImplTest {
         created.close()
 
         assertArrayEquals(byteArrayOf(7), storedWorldBytes(uuid, "survival"))
-        assertEquals(1, bridge.count("unload:"))
-        assertTrue(closing.loadedWorlds.isEmpty())
+        assertEquals(0, bridge.count("unload:"))
         assertNull(ApiInstances.ownership.ownerOf("survival"))
         assertTrue(ApiInstances.all.isEmpty())
+    }
+
+    @Test
+    fun `creating an already loaded world is rejected and leaves the loaded world untouched`() = runTest {
+        val locks = FakeLocks()
+        val api = SurfPolarPaperApiImpl(plugin, settings(), { storage }, { bridge }, { locks })
+        val uuid = UUID.randomUUID()
+        val world = api.createWorld(uuid, "survival")
+        val callsBefore = bridge.calls.toList()
+
+        assertThrows<IllegalStateException> { api.createWorld(uuid, "survival") }
+
+        assertSame(world, api.findWorld(uuid, "survival"))
+        assertEquals(callsBefore, bridge.calls)
+        assertEquals(setOf(WorldCacheKey(uuid, "survival")), locks.held)
+        assertTrue(world in bridge.platformWorlds)
+    }
+
+    @Test
+    fun `a failing create releases the lock, unloads the platform world and caches nothing`() = runTest {
+        val locks = FakeLocks()
+        val api = SurfPolarPaperApiImpl(plugin, settings(), { storage }, { bridge }, { locks })
+        val uuid = UUID.randomUUID()
+        bridge.failOnLoad = RuntimeException("boom")
+
+        assertThrows<IllegalStateException> { api.createWorld(uuid, "survival") }
+
+        assertTrue(locks.held.isEmpty())
+        assertEquals(1, bridge.count("unload:"))
+        assertNull(api.findWorld(uuid, "survival"))
+        assertEquals(0, storage.writes)
+    }
+
+    @Test
+    fun `concurrent loads of the same world load it once`() = runTest {
+        val uuid = UUID.randomUUID()
+        store(uuid, "survival", byteArrayOf(1))
+        val gate = CompletableDeferred<Unit>()
+        bridge.loadGate = gate
+
+        val first = async { api.loadWorld(uuid, "survival") }
+        val second = async { api.loadWorld(uuid, "survival") }
+        runCurrent()
+        gate.complete(Unit)
+
+        assertSame(first.await(), second.await())
+        assertEquals(1, bridge.count("load:"))
+    }
+
+    @Test
+    fun `a second instance of the same plugin cannot declare an owned game mode`() {
+        val factory = SurfPolarPaperApiFactoryImpl()
+        val first = factory.create(plugin, settings())
+
+        assertThrows<GameModeAlreadyOwnedException> { factory.create(plugin, settings()) }
+
+        assertEquals(listOf(first), ApiInstances.all)
     }
 
     @Test

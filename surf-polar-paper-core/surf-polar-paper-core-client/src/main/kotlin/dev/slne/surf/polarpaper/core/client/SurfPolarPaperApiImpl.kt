@@ -21,17 +21,24 @@ import dev.slne.surf.polarpaper.core.client.utils.WorldStorageCodec
 import dev.slne.surf.polarpaper.core.client.world.PlatformWorldBridge
 import dev.slne.surf.polarpaper.core.client.world.SurfWorldImpl
 import dev.slne.surf.polarpaper.core.common.world.WorldCacheKey
+import dev.slne.surf.polarpaper.core.common.world.key
 import it.unimi.dsi.fastutil.objects.ObjectSet
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.bukkit.plugin.Plugin
 import org.jetbrains.annotations.UnmodifiableView
 import java.util.*
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -54,6 +61,7 @@ class SurfPolarPaperApiImpl internal constructor(
     private val platformBridge get() = platformBridgeSupplier()
     private val worldLocks get() = worldLocksSupplier()
     private val closed = AtomicBoolean(false)
+    private val loadMutexes = ConcurrentHashMap<WorldCacheKey, Mutex>()
 
     private val autosaveJob: Job? = settings.autosaveInterval?.let { interval ->
         autosaveScope.launch {
@@ -124,17 +132,24 @@ class SurfPolarPaperApiImpl internal constructor(
         }
     }
 
-    /** Unloads a world whose load failed. A failure here must not hide the original exception. */
-    private suspend fun discardFailedLoad(world: SurfWorldImpl) {
-        try {
-            platformBridge.unloadWorld(world)
-        } catch (exception: CancellationException) {
-            throw exception
-        } catch (exception: Exception) {
-            log.atWarning().withCause(exception).log("Failed to unload platform world $world after a failed load")
+    /**
+     * Cleans up after a failed load or create: unloads the platform world and releases the lock. Runs
+     * non-cancellable so a cancelled caller cannot leave the world locked; a failure here must not hide the
+     * original exception.
+     */
+    private suspend fun discardFailedLoad(world: SurfWorldImpl?, key: WorldCacheKey) {
+        withContext(NonCancellable) {
+            try {
+                if (world != null) platformBridge.unloadWorld(world)
+            } catch (exception: Exception) {
+                log.atWarning().withCause(exception).log("Failed to unload platform world $world after a failed load")
+            } finally {
+                releaseLock(key)
+            }
         }
-        releaseLock(WorldCacheKey(world.uuid, world.gameModeIdentifier))
     }
+
+    private fun mutexFor(key: WorldCacheKey) = loadMutexes.computeIfAbsent(key) { Mutex() }
 
     override suspend fun createWorld(
         worldUuid: UUID,
@@ -144,25 +159,33 @@ class SurfPolarPaperApiImpl internal constructor(
     ): SurfWorld {
         val gameMode = requireOwned(gameModeIdentifier)
         val key = WorldCacheKey(worldUuid, gameModeIdentifier)
-        val templateVersion = worldVersion ?: gameMode.currentVersion
-        val world = SurfWorldImpl(worldUuid, gameModeIdentifier, templateVersion, this, platformBridge)
 
-        worldLocks.lock(key)
-        try {
-            val migrations = MigrationPlanner.plan(worldUuid, gameMode, templateVersion)
+        return mutexFor(key).withLock {
+            // Locking again would be a no-op for this server, and a failure would then unload the live world
+            check(worldCache.getIfPresent(key) == null) {
+                "World $gameModeIdentifier-$worldUuid is already loaded"
+            }
 
-            loadWorldPlatform(world, polarBytes, migrations)
-            world.version = gameMode.currentVersion
-            saveWorld(world)
-        } catch (exception: Exception) {
-            discardFailedLoad(world)
-            throw exception
+            val templateVersion = worldVersion ?: gameMode.currentVersion
+            val world = SurfWorldImpl(worldUuid, gameModeIdentifier, templateVersion, this, platformBridge)
+
+            worldLocks.lock(key)
+            try {
+                val migrations = MigrationPlanner.plan(worldUuid, gameMode, templateVersion)
+
+                loadWorldPlatform(world, polarBytes, migrations)
+                world.version = gameMode.currentVersion
+                saveWorld(world)
+            } catch (exception: Exception) {
+                discardFailedLoad(world, key)
+                throw exception
+            }
+
+            worldCache.put(key, world)
+            log.atInfo().log("Created world $world")
+
+            world
         }
-
-        worldCache.put(key, world)
-        log.atInfo().log("Created world $world")
-
-        return world
     }
 
     override suspend fun loadWorld(
@@ -174,40 +197,40 @@ class SurfPolarPaperApiImpl internal constructor(
         val key = WorldCacheKey(worldUuid, gameModeIdentifier)
         worldCache.getIfPresent(key)?.let { return it }
 
-        // Locked before reading, so no other server can change the world while it is loaded here
-        worldLocks.lock(key)
+        // Concurrent callers for the same world wait here and then find it cached
+        mutexFor(key).withLock {
+            worldCache.getIfPresent(key)?.let { return@withLock it }
 
-        var world: SurfWorldImpl? = null
-        try {
-            val storedBytes = storageProvider.loadWorldBytes(worldUuid, gameModeIdentifier)
-                ?: throw IllegalStateException("World with UUID $worldUuid and game mode $gameModeIdentifier does not exist")
-            val stored = WorldStorageCodec.decode(storedBytes)
-            val migrations = MigrationPlanner.plan(worldUuid, gameMode, stored.worldVersion)
+            // Locked before reading, so no other server can change the world while it is loaded here
+            worldLocks.lock(key)
 
-            val loading = SurfWorldImpl(worldUuid, gameModeIdentifier, stored.worldVersion, this, platformBridge)
-            world = loading
+            var world: SurfWorldImpl? = null
+            try {
+                val storedBytes = storageProvider.loadWorldBytes(worldUuid, gameModeIdentifier)
+                    ?: throw IllegalStateException("World with UUID $worldUuid and game mode $gameModeIdentifier does not exist")
+                val stored = WorldStorageCodec.decode(storedBytes)
+                val migrations = MigrationPlanner.plan(worldUuid, gameMode, stored.worldVersion)
 
-            loadWorldPlatform(loading, stored.worldBytes, migrations)
-            loading.version = gameMode.currentVersion
+                val loading = SurfWorldImpl(worldUuid, gameModeIdentifier, stored.worldVersion, this, platformBridge)
+                world = loading
 
-            // Persist the migrated state right away, so the migrations never have to run twice
-            if (stored.worldVersion != gameMode.currentVersion) {
-                saveWorld(loading)
+                loadWorldPlatform(loading, stored.worldBytes, migrations)
+                loading.version = gameMode.currentVersion
+
+                // Persist the migrated state right away, so the migrations never have to run twice
+                if (stored.worldVersion != gameMode.currentVersion) {
+                    saveWorld(loading)
+                }
+
+                worldCache.put(key, loading)
+                log.atInfo().log("Loaded world $loading")
+
+                loading
+            } catch (exception: Exception) {
+                discardFailedLoad(world, key)
+                throw exception
             }
-        } catch (exception: Exception) {
-            if (world != null) {
-                discardFailedLoad(world)
-            } else {
-                releaseLock(key)
-            }
-            throw exception
         }
-
-        val loaded = checkNotNull(world)
-        worldCache.put(key, loaded)
-        log.atInfo().log("Loaded world $loaded")
-
-        return loaded
     }
 
     override suspend fun saveWorld(
@@ -217,7 +240,7 @@ class SurfPolarPaperApiImpl internal constructor(
         requireOwned(impl.gameModeIdentifier)
 
         // Without the lock another server may have loaded and changed the world, saving would overwrite that
-        check(worldLocks.isHeld(WorldCacheKey(impl.uuid, impl.gameModeIdentifier))) {
+        check(worldLocks.isHeld(impl.key())) {
             "Not saving world $impl, this server no longer holds its lock"
         }
 
@@ -243,7 +266,7 @@ class SurfPolarPaperApiImpl internal constructor(
         saveChanges: Boolean
     ) {
         val impl = implOf(world)
-        val key = WorldCacheKey(impl.uuid, impl.gameModeIdentifier)
+        val key = impl.key()
 
         if (saveChanges) {
             saveWorld(impl)
@@ -262,7 +285,7 @@ class SurfPolarPaperApiImpl internal constructor(
         requireOwned(world.gameModeIdentifier)
 
         // A world that is not loaded here is locked for the deletion, so it cannot be deleted while loaded elsewhere
-        val key = WorldCacheKey(world.uuid, world.gameModeIdentifier)
+        val key = world.key()
         if (!worldLocks.isHeld(key)) {
             worldLocks.lock(key)
         }
@@ -308,9 +331,11 @@ class SurfPolarPaperApiImpl internal constructor(
     override suspend fun close() {
         if (!closed.compareAndSet(false, true)) return
 
-        autosaveJob?.cancel()
+        autosaveJob?.cancelAndJoin()
         try {
-            unloadAllWorlds(saveChanges = true)
+            // Only save: Paper's world manager is already closed at shutdown and worlds with players cannot be
+            // unloaded then. Locks are released when the server disconnects.
+            saveAllWorlds()
         } finally {
             ApiInstances.unregister(this)
         }

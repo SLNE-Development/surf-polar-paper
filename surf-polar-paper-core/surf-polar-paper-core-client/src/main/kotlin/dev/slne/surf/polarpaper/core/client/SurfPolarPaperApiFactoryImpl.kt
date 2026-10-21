@@ -9,24 +9,15 @@ import org.bukkit.plugin.Plugin
 
 @AutoService(SurfPolarPaperApiFactory::class)
 class SurfPolarPaperApiFactoryImpl : SurfPolarPaperApiFactory {
-    override fun create(plugin: Plugin, settings: PolarPaperSettings): SurfPolarPaperApi {
-        // Claim before anything is created, so a conflict leaves nothing behind
-        try {
-            settings.gameModes.keys.forEach { ApiInstances.ownership.claim(it, plugin.name) }
-        } catch (exception: Exception) {
-            ApiInstances.restoreClaims(plugin.name)
-            throw exception
+    override fun create(plugin: Plugin, settings: PolarPaperSettings): SurfPolarPaperApi =
+        // Claims before creating, so a conflict leaves nothing behind
+        ApiInstances.claimAndRegister(plugin, settings) {
+            SurfPolarPaperApiImpl(
+                plugin = plugin,
+                settings = settings,
+                storageProviderSupplier = { SurfPolarPaperInstance.INSTANCE.storageProvider },
+                platformBridgeSupplier = { PlatformWorldBridge.INSTANCE },
+                worldLocksSupplier = { SurfPolarPaperInstance.INSTANCE.worldLocks }
+            )
         }
-
-        val api = SurfPolarPaperApiImpl(
-            plugin = plugin,
-            settings = settings,
-            storageProviderSupplier = { SurfPolarPaperInstance.INSTANCE.storageProvider },
-            platformBridgeSupplier = { PlatformWorldBridge.INSTANCE },
-            worldLocksSupplier = { SurfPolarPaperInstance.INSTANCE.worldLocks }
-        )
-        ApiInstances.register(api)
-
-        return api
-    }
 }

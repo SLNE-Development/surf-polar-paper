@@ -20,12 +20,13 @@ class FakePlatformWorldBridge : PlatformWorldBridge {
     val failingUnloads = mutableSetOf<SurfWorldImpl>()
     var failOnLoad: Exception? = null
 
-    /** Migrations of the last load. */
-    var lastMigrations: List<WorldMigration> = emptyList()
+    /** When set, loads wait for it, so tests can interleave concurrent callers. */
+    var loadGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
 
     override suspend fun loadWorld(world: SurfWorldImpl, polarBytes: ByteArray?, migrations: List<WorldMigration>) {
         calls += "load:${world.name}:${migrations.map { it.toVersion }}"
-        lastMigrations = migrations
+        loadGate?.await()
         failOnLoad?.let { throw it }
 
         platformWorlds[world] = polarBytes ?: ByteArray(0)

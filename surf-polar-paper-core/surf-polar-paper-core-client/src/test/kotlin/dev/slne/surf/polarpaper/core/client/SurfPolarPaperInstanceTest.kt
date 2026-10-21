@@ -1,6 +1,5 @@
 package dev.slne.surf.polarpaper.core.client
 
-
 import dev.slne.surf.polarpaper.core.client.config.PolarPaperConfig
 import dev.slne.surf.polarpaper.core.client.config.WorldLockingConfig
 import dev.slne.surf.polarpaper.core.client.config.storage.PolarPaperStorageConfig
