@@ -26,17 +26,137 @@ dependencies {
 }
 ```
 
+Every plugin creates its own API instance. The instance owns the game modes it declares, and only it can load, create,
+save or delete worlds of those game modes. A second plugin that declares an owned game mode fails with a
+`GameModeAlreadyOwnedException`.
+
 ```kotlin
-val api = SurfPolarPaperApi.INSTANCE
+val api = SurfPolarPaperApi.create(this) {
+    gameMode("skyblock") {
+        version = 2
+        migration(RemoveStrawberries)
+    }
+
+    handlers {
+        entities()
+        nexoFurniture()
+        add(MultiblockHandler)
+    }
+
+    autosave(5.minutes)
+}
 
 val world = api.loadWorld(worldUuid, "skyblock")
-val bukkitWorld = api.getPlatformWorld<World>(world)
+val bukkitWorld = world.bukkitWorld
 
 api.saveWorld(world)
 api.unloadWorld(world)
 ```
 
 Loading or creating a world that is loaded on another server throws a `WorldLockedException` naming that server.
+When the plugin is disabled, its instances are closed: they save their worlds and free their game modes.
+
+### Data sections and handlers
+
+A world and each of its chunks hold keyed, typed data sections that are saved with the world. A `DataType` names a
+section and its kotlinx-serialization type. Gameplay code can read and write sections on a loaded chunk or world:
+
+```kotlin
+val Multiblocks = DataType(Key.key("myplugin", "multiblocks"), ListSerializer(Multiblock.serializer()))
+
+// in the settings: data(Multiblocks)
+val blocks = world.chunk(x, z)?.data?.get(Multiblocks)
+world.data[Multiblocks] = listOf(Multiblock(...))
+```
+
+A `ChunkDataHandler` captures plugin state into a section when the world is saved and restores it when the chunk
+loads:
+
+```kotlin
+object MultiblockHandler : ChunkDataHandler<List<Multiblock>> {
+    override val type = Multiblocks
+
+    // Runs on the chunk's owning thread while the world is prepared for saving
+    override fun capture(chunk: Chunk, entities: List<Entity>, claim: (Entity) -> Unit) =
+        MultiblockRegistry.inChunk(chunk).ifEmpty { null }
+
+    // Runs on the tick thread right after the chunk became live
+    override fun restore(chunk: Chunk, value: List<Multiblock>) = MultiblockRegistry.restore(chunk, value)
+}
+```
+
+Entities passed to `claim` are not saved by the entities handler, so furniture is never stored twice. Chunk hooks
+(`onChunkLoad`, `onChunkSave` in the settings) run for every chunk.
+
+Built-in handlers, enabled in the `handlers { }` block:
+
+| Settings call      | Section keys                                            | Stores                                                    |
+|--------------------|---------------------------------------------------------|-----------------------------------------------------------|
+| `entities()`       | `surf:entities`, `surf:chunk-pdc`                       | All non-player entities that no handler claimed, and the chunk's persistent data |
+| `nexoFurniture()`  | `nexo:furniture`                                        | Nexo furniture as neutral records (id, position, rotation, properties) |
+| `craftEngine()`    | `craftengine:furniture`, `craftengine:blocks`           | CraftEngine furniture and custom blocks as neutral records |
+
+The records contain no classes of the furniture plugin, so a later migration can still read `nexo:furniture` when Nexo
+is no longer installed.
+
+A world that holds a section no registered type or usable handler accounts for is not loaded, so data is never dropped
+quietly. A handler is usable when its plugin is installed.
+
+### World versions and migrations
+
+Every stored world records its version. The plugin that loads it declares the version it runs, and migration N upgrades
+a world from N-1 to N:
+
+- Stored equals current: the world loads as it is.
+- Stored is greater than current (an older plugin build): the load is refused with a `WorldVersionTooNewException`.
+- Stored is less than current: every step from stored+1 to current is applied in order. A step without a registered
+  migration does nothing and the version moves past it, also for gaps in the middle.
+- A world created without bytes starts at the current version. A template given to `createWorld` can name its own
+  `worldVersion` and is migrated like any loaded world.
+
+A migration has a raw stage and an optional live stage. The raw stage runs on the stored data before Bukkit sees the
+world and should be preferred:
+
+```kotlin
+// Strawberries exist in version 1 and are removed in version 2
+object RemoveStrawberries : WorldMigration(2) {
+    override fun migrateRaw(world: RawWorld) {
+        val minY = world.minSection * 16
+        val maxY = (world.maxSection + 1) * 16 - 1
+
+        for (chunk in world.chunks) {
+            for (x in 0..15) for (z in 0..15) for (y in minY..maxY) {
+                if (chunk.getBlock(x, y, z).startsWith("minecraft:sweet_berry_bush")) {
+                    chunk.setBlock(x, y, z, "minecraft:air")
+                }
+            }
+        }
+    }
+}
+```
+
+A migration that needs live chunks, for example to spawn entities, adds a live stage:
+
+```kotlin
+object ReplaceChairs : WorldMigration(3) {
+    override val hasLiveStage get() = true
+
+    override fun migrateLive(chunk: SurfChunk) {
+        // Runs on the chunk's region thread, after all raw stages of all pending versions
+    }
+}
+```
+
+When several steps are pending, all raw stages run first in version order, then the platform world is created, every
+chunk is force-loaded once (at most 32 at a time) and the live stages run in version order. Worlds without a live stage
+are not force-loaded. Any exception aborts the load with a `WorldMigrationException` naming the version, and the stored
+world stays as it was. After the migrations the world is saved at the new version before it is returned.
+
+### Known limitations
+
+- Polar drops chunks that only contain air when it saves, including their data sections. Data in an all-air chunk is lost.
+- Polar's own autosave is switched off for these worlds, because it would skip the preparation that captures the
+  handler data. Use the `autosave(...)` setting of the API instance instead.
 
 ## Installing the plugin
 
@@ -55,8 +175,6 @@ Download `surf-polar-paper-runtime-paper-<version>-all.jar` from the
 `plugins/surf-polar-paper-runtime-paper/polar-paper.yml`:
 
 ```yaml
-# The game mode this server hosts worlds for.
-game-mode-identifier: default
 storage:
     # DISK, DATABASE or S3. Only the matching section below is used.
     storage-type: S3
@@ -78,6 +196,10 @@ locking:
 ### Commands
 
 All commands need the permission `surf.polarpaper.runtime.command.world`.
+
+`create`, `load`, `unload` and `delete` act through the plugin that owns the game mode, with its handlers and
+migrations, and fail with `No plugin owns game mode '<id>'` when there is none. `list` and `join` work on any loaded or
+stored world.
 
 | Command                                              | Description                                 |
 |------------------------------------------------------|---------------------------------------------|

@@ -1,187 +1,399 @@
 package dev.slne.surf.polarpaper.runtime.paper
 
-import dev.slne.surf.polarpaper.api.world.SurfWorld
+import dev.slne.surf.polarpaper.api.data.ChunkDataHandler
+import dev.slne.surf.polarpaper.api.data.DataType
+import dev.slne.surf.polarpaper.api.migration.RawWorld
+import dev.slne.surf.polarpaper.api.migration.WorldMigration
+import dev.slne.surf.polarpaper.api.settings.PolarPaperSettings
+import dev.slne.surf.polarpaper.api.settings.polarPaperSettings
+import dev.slne.surf.polarpaper.api.world.SurfChunk
+import dev.slne.surf.polarpaper.api.world.UnhandledWorldDataException
+import dev.slne.surf.polarpaper.api.world.WorldMigrationException
+import dev.slne.surf.polarpaper.core.client.SurfPolarPaperApiImpl
+import dev.slne.surf.polarpaper.core.client.data.MapDataSections
+import dev.slne.surf.polarpaper.core.client.data.SectionContainerCodec
+import dev.slne.surf.polarpaper.core.client.world.SurfWorldImpl
+import dev.slne.surf.polarpaper.runtime.paper.access.SurfWorldAccess
+import dev.slne.surf.polarpaper.runtime.paper.pipeline.PaperPlatform
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.mockkStatic
-import io.mockk.unmockkAll
-import io.mockk.verify
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.test.runTest
-import live.minehub.polarpaper.Polar
-import live.minehub.polarpaper.core.source.BytesPolarSource
-import live.minehub.polarpaper.core.source.PolarSource
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
+import live.minehub.polarpaper.core.world.PolarChunk
 import live.minehub.polarpaper.core.world.PolarWorld
-import org.bukkit.Bukkit
-import org.bukkit.NamespacedKey
+import live.minehub.polarpaper.core.world.PolarWorldAccess
+import net.kyori.adventure.key.Key
+import net.minecraft.SharedConstants
+import org.bukkit.Chunk
 import org.bukkit.World
-import org.junit.jupiter.api.AfterEach
+import org.bukkit.entity.Entity
+import org.bukkit.plugin.Plugin
 import org.junit.jupiter.api.Assertions.assertArrayEquals
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertSame
-import org.junit.jupiter.api.BeforeEach
+import org.junit.jupiter.api.Assertions.assertTrue
+import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.util.*
-import java.util.concurrent.CompletableFuture
-import java.util.concurrent.Executors
+import java.util.concurrent.CopyOnWriteArrayList
 
 class PlatformWorldBridgePaperTest {
-    private val globalRegionExecutor = Executors.newSingleThreadExecutor { Thread(it, "global-region") }
-    // A real PolarWorld needs Minecraft's server classes
-    private val emptyPolarWorld = mockk<PolarWorld>()
-    private val bridge = PlatformWorldBridgePaper(
-        globalRegionContext = { globalRegionExecutor.asCoroutineDispatcher() },
-        emptyPolarWorld = { emptyPolarWorld }
-    )
-
-    private val world = SurfWorld(UUID.randomUUID(), "survival", byteArrayOf(1, 2, 3))
-    private val platformWorld = mockk<World>()
-
-    @BeforeEach
-    fun setUp() {
-        mockkStatic(Bukkit::class, Polar::class)
-        every { Bukkit.getWorld(any<NamespacedKey>()) } returns null
-        every { Bukkit.isGlobalTickThread() } returns false
+    companion object {
+        // PolarWorld reads the game version when it is created
+        @JvmStatic
+        @BeforeAll
+        fun detectVersion() = SharedConstants.tryDetectVersion()
     }
 
-    @AfterEach
-    fun tearDown() {
-        unmockkAll()
-        globalRegionExecutor.shutdownNow()
-    }
+    /** One timeline for the stages and the platform calls, so tests can assert their relative order. */
+    private val events = CopyOnWriteArrayList<String>()
 
-    private fun worldIsLoaded() {
-        every { Bukkit.getWorld(PlatformWorldBridgePaper.worldKey(world)) } returns platformWorld
-    }
+    /** A platform that keeps real Polar worlds and drives [SurfWorldAccess] the way Polar does, without a server. */
+    private inner class FakePlatform : PaperPlatform {
+        val bukkit = mockk<World>(relaxed = true)
+        var polarWorld: PolarWorld? = null
+        var access: SurfWorldAccess? = null
+        val unloaded = mutableListOf<World>()
+        val savedUserData = mutableListOf<ByteArray>()
+        var savedBytes = byteArrayOf(9, 9)
+        var refuseUnload = false
+        private val chunks = HashMap<Pair<Int, Int>, Chunk>()
 
-    @Test
-    fun `loadWorld creates the polar world from the world bytes`() = runTest {
-        var loadedBytes: ByteArray? = null
-        every { Polar.createWorld(any<PolarSource>(), world.name) } answers {
-            loadedBytes = (firstArg<PolarSource>() as BytesPolarSource).bytes()
-            CompletableFuture.completedFuture(platformWorld)
+        val created get() = events.count { it == "create" }
+        val forceLoads get() = events.count { it.startsWith("load:") }
+
+        override suspend fun createWorld(polarWorld: PolarWorld, name: String, access: PolarWorldAccess): World? {
+            events += "create"
+            this.polarWorld = polarWorld
+            this.access = access as SurfWorldAccess
+            return bukkit
         }
 
-        bridge.loadWorld(world)
+        override fun findWorld(name: String): World? = bukkit.takeIf { polarWorld != null && unloaded.isEmpty() }
 
-        assertArrayEquals(byteArrayOf(1, 2, 3), loadedBytes)
-    }
-
-    @Test
-    fun `a world without bytes starts as an empty polar world`() = runTest {
-        val newWorld = SurfWorld(UUID.randomUUID(), "survival", ByteArray(0))
-        every { Polar.createWorld(emptyPolarWorld, newWorld.name) } returns CompletableFuture.completedFuture(platformWorld)
-
-        bridge.loadWorld(newWorld)
-
-        verify(exactly = 1) { Polar.createWorld(emptyPolarWorld, newWorld.name) }
-        verify(exactly = 0) { Polar.createWorld(any<PolarSource>(), any<String>()) }
-    }
-
-    @Test
-    fun `loadWorld does nothing when the world is already loaded`() = runTest {
-        worldIsLoaded()
-
-        bridge.loadWorld(world)
-
-        verify(exactly = 0) { Polar.createWorld(any<PolarSource>(), any<String>()) }
-    }
-
-    @Test
-    fun `loadWorld fails with an IllegalStateException when polar returns no world`() = runTest {
-        every { Polar.createWorld(any<PolarSource>(), world.name) } returns CompletableFuture.completedFuture(null)
-
-        assertThrows<IllegalStateException> { bridge.loadWorld(world) }
-    }
-
-    @Test
-    fun `createWorld loads the world`() = runTest {
-        every { Polar.createWorld(any<PolarSource>(), world.name) } returns CompletableFuture.completedFuture(platformWorld)
-
-        bridge.createWorld(world)
-
-        verify(exactly = 1) { Polar.createWorld(any<PolarSource>(), world.name) }
-    }
-
-    @Test
-    fun `saveWorld stores the polar bytes in the world`() = runTest {
-        worldIsLoaded()
-        every { Polar.saveWorld(platformWorld, any<PolarSource>()) } answers {
-            (secondArg<PolarSource>() as BytesPolarSource).bytes(byteArrayOf(9, 9))
-            CompletableFuture.completedFuture(null)
+        override suspend fun unloadWorld(world: World): Boolean {
+            events += "unload"
+            if (refuseUnload) return false
+            unloaded += world
+            return true
         }
 
-        bridge.saveWorld(world)
+        override suspend fun loadChunk(world: World, x: Int, z: Int): Chunk {
+            events += "load:$x,$z"
+            val chunk = mockk<Chunk>(relaxed = true) {
+                every { this@mockk.x } returns x
+                every { this@mockk.z } returns z
+            }
+            chunks[x to z] = chunk
+            // Polar restores the chunk data right after inserting the chunk
+            access!!.load(chunk, polarWorld!!.chunkAt(x, z)?.userData())
+            return chunk
+        }
 
-        assertArrayEquals(byteArrayOf(9, 9), world.worldBytes)
+        override fun chunkIfLoaded(world: World, x: Int, z: Int): Chunk? = chunks[x to z]
+
+        override fun addTicket(world: World, x: Int, z: Int, plugin: Plugin) {
+            events += "ticket+:$x,$z"
+        }
+
+        override fun removeTicket(world: World, x: Int, z: Int, plugin: Plugin) {
+            events += "ticket-:$x,$z"
+        }
+
+        override suspend fun <T> onChunkThread(world: World, x: Int, z: Int, block: () -> T): T = block()
+
+        override fun setWorldUserData(world: World, bytes: ByteArray) {
+            events += "userData"
+            savedUserData += bytes
+        }
+
+        override suspend fun savePolar(world: World, polarWorld: PolarWorld, access: PolarWorldAccess): ByteArray {
+            events += "savePolar"
+            return savedBytes
+        }
+    }
+
+    private val platform = FakePlatform()
+
+    // The tests hand over a prepared world instead of bytes: Polar reads and writes with a compression library that
+    // only the server provides
+    private var storedWorld: PolarWorld? = null
+    private val bridge = PlatformWorldBridgePaper(platform) { requireNotNull(storedWorld) }
+    private val storedBytes = byteArrayOf(1)
+
+    private val listType = DataType(Key.key("test", "numbers"), ListSerializer(Int.serializer()))
+    private val nexoKey = Key.key("nexo", "furniture")
+    private val textType = DataType(Key.key("test", "text"), String.serializer())
+
+    // Written as plain bytes, because nexo:furniture is reserved and cannot be registered as a custom type
+    private val nexoBytes = byteArrayOf(1, 2, 3)
+
+    private fun world(settings: PolarPaperSettings): SurfWorldImpl {
+        val api = mockk<SurfPolarPaperApiImpl>(relaxed = true) {
+            every { this@mockk.settings } returns settings
+            every { plugin } returns mockk<Plugin>(relaxed = true)
+        }
+        return SurfWorldImpl(UUID.randomUUID(), "survival", 1, api, bridge)
+    }
+
+    private fun settings(vararg types: DataType<*>, handlers: List<ChunkDataHandler<*>> = emptyList()) =
+        polarPaperSettings {
+            gameMode("survival") { version = 100 }
+            types.forEach { data(it) }
+            handlers { handlers.forEach { add(it) } }
+        }
+
+    /** Stores a world with the given chunks, each holding the given encoded sections, and returns its fake bytes. */
+    private fun polarBytes(vararg chunks: Triple<Int, Int, Map<String, ByteArray>>): ByteArray {
+        storedWorld = PolarWorld(-4, 19, chunks.map { (x, z, sections) ->
+            PolarChunk(x, z, 24).withUserData(SectionContainerCodec.encode(sections))
+        })
+        return storedBytes
+    }
+
+    private fun encoded(type: DataType<String>, value: String): ByteArray {
+        val sections = MapDataSections()
+        sections[type] = value
+        return sections.raw().getValue(type.key.asString())
+    }
+
+    /** A migration that records its stages on the shared timeline. */
+    private fun recording(
+        to: Int,
+        live: Boolean = false,
+        raw: (RawWorld) -> Unit = {},
+        onLive: (SurfChunk) -> Unit = {}
+    ) = object : WorldMigration(to) {
+        override fun migrateRaw(world: RawWorld) {
+            events += "raw$to"
+            raw(world)
+        }
+
+        override val hasLiveStage get() = live
+
+        override fun migrateLive(chunk: SurfChunk) {
+            events += "live$to:${chunk.x},${chunk.z}"
+            onLive(chunk)
+        }
     }
 
     @Test
-    fun `saveWorld fails for a world that is not loaded`() = runTest {
+    fun `raw stages run in version order before the platform world is created`() = runTest {
+        val world = world(settings())
+
+        bridge.loadWorld(world, null, listOf(recording(2), recording(3), recording(4)))
+
+        assertEquals(listOf("raw2", "raw3", "raw4", "create"), events.toList())
+    }
+
+    @Test
+    fun `a world migrated from 1 to 100 applies all 99 raw stages in order on the same data`() = runTest {
+        val world = world(settings(listType))
+        val migrations = (2..100).map { version ->
+            object : WorldMigration(version) {
+                override fun migrateRaw(world: RawWorld) {
+                    // Migration 100 only sees what migration 2 wrote when all of them share the data
+                    val numbers = world.data[listType].orEmpty()
+                    check(version == 2 || numbers.first() == 2) { "Migration $version does not see migration 2" }
+                    world.data[listType] = numbers + version
+                }
+            }
+        }
+
+        bridge.loadWorld(world, null, migrations)
+
+        assertEquals((2..100).toList(), world.data[listType])
+    }
+
+    @Test
+    fun `no force load happens without live stages`() = runTest {
+        val world = world(settings())
+        val bytes = polarBytes(Triple(0, 0, emptyMap()), Triple(1, 0, emptyMap()))
+
+        bridge.loadWorld(world, bytes, listOf(recording(2)))
+
+        assertEquals(0, platform.forceLoads)
+        assertTrue(events.none { it.startsWith("ticket") })
+    }
+
+    @Test
+    fun `live stages run for every chunk after all raw stages`() = runTest {
+        val world = world(settings())
+        val bytes = polarBytes(Triple(0, 0, emptyMap()), Triple(1, 0, emptyMap()), Triple(0, 1, emptyMap()))
+
+        bridge.loadWorld(world, bytes, listOf(recording(2, live = true), recording(3, live = true)))
+
+        val timeline = events.toList()
+        val firstLive = timeline.indexOfFirst { it.startsWith("live") }
+        assertTrue(timeline.indexOf("raw3") < timeline.indexOf("create"))
+        // Every chunk is loaded before the first live stage runs
+        assertEquals(3, timeline.take(firstLive).count { it.startsWith("load:") })
+        assertEquals(setOf("0,0", "1,0", "0,1"), timeline.filter { it.startsWith("live2:") }.map { it.removePrefix("live2:") }.toSet())
+        for (chunk in listOf("0,0", "1,0", "0,1")) {
+            assertTrue(timeline.indexOf("live2:$chunk") < timeline.indexOf("live3:$chunk"), "Order in chunk $chunk")
+        }
+        // The tickets are held while migrating and removed afterwards
+        assertEquals(3, timeline.count { it.startsWith("ticket+:") })
+        assertEquals(3, timeline.count { it.startsWith("ticket-:") })
+        assertTrue(timeline.indexOfLast { it.startsWith("live") } < timeline.indexOfFirst { it.startsWith("ticket-:") })
+    }
+
+    @Test
+    fun `a section without handler aborts the load and unloads the platform world`() = runTest {
+        val world = world(settings())
+        val bytes = polarBytes(Triple(0, 0, mapOf(nexoKey.asString() to nexoBytes)))
+
+        val exception = assertThrows<UnhandledWorldDataException> {
+            bridge.loadWorld(world, bytes, listOf(recording(2, live = true)))
+        }
+
+        assertEquals(setOf(nexoKey), exception.keys)
+        // The platform world exists during live stages, so it has to be unloaded again
+        assertEquals(listOf(platform.bukkit), platform.unloaded)
+        assertNull(bridge.chunk(world, 0, 0))
+    }
+
+    @Test
+    fun `a section without handler aborts a load without live stages before the platform world is created`() = runTest {
+        val world = world(settings())
+        val bytes = polarBytes(Triple(0, 0, mapOf(nexoKey.asString() to nexoBytes)))
+
+        assertThrows<UnhandledWorldDataException> { bridge.loadWorld(world, bytes, listOf(recording(2))) }
+
+        assertEquals(0, platform.created)
+    }
+
+    @Test
+    fun `unhandled keys of world data count too`() = runTest {
+        val world = world(settings())
+        val raw = mapOf(nexoKey.asString() to nexoBytes)
+        storedWorld = PolarWorld(-4, 19).also { it.userData(SectionContainerCodec.encode(raw)) }
+
+        val exception = assertThrows<UnhandledWorldDataException> { bridge.loadWorld(world, storedBytes, emptyList()) }
+
+        assertEquals(setOf(nexoKey), exception.keys)
+    }
+
+    @Test
+    fun `a nexo section removed by a live stage does not abort the load`() = runTest {
+        val world = world(settings())
+        val bytes = polarBytes(Triple(0, 0, mapOf(nexoKey.asString() to nexoBytes)))
+        val removeNexo = recording(2, live = true, onLive = { it.data.remove(nexoKey) })
+
+        bridge.loadWorld(world, bytes, listOf(removeNexo))
+
+        assertTrue(platform.unloaded.isEmpty())
+        assertSame(platform.bukkit, bridge.bukkitWorld(world))
+    }
+
+    @Test
+    fun `a throwing raw stage is wrapped with its version and no platform world is created`() = runTest {
+        val world = world(settings())
+        val failure = IllegalStateException("boom")
+        val migrations = listOf(recording(2), recording(3, raw = { throw failure }), recording(4))
+
+        val exception = assertThrows<WorldMigrationException> { bridge.loadWorld(world, null, migrations) }
+
+        assertEquals(3, exception.toVersion)
+        assertSame(failure, exception.cause)
+        assertEquals(world.uuid, exception.worldUuid)
+        assertEquals(0, platform.created)
+        assertFalse("raw4" in events)
+    }
+
+    @Test
+    fun `a throwing live stage is wrapped with its version and unloads the platform world`() = runTest {
+        val world = world(settings())
+        val bytes = polarBytes(Triple(0, 0, emptyMap()))
+        val migration = recording(2, live = true, onLive = { error("boom") })
+
+        val exception = assertThrows<WorldMigrationException> { bridge.loadWorld(world, bytes, listOf(migration)) }
+
+        assertEquals(2, exception.toVersion)
+        assertEquals(listOf(platform.bukkit), platform.unloaded)
+        assertEquals(1, events.count { it == "ticket-:0,0" })
+    }
+
+    @Test
+    fun `save returns polar bytes including world data`() = runTest {
+        val world = world(settings(listType))
+        val bytes = polarBytes(Triple(0, 0, emptyMap()))
+        bridge.loadWorld(world, bytes, emptyList())
+        platform.loadChunk(platform.bukkit, 0, 0)
+        world.data[listType] = listOf(1, 2, 3)
+        events.clear()
+
+        val saved = bridge.saveWorld(world)
+
+        assertArrayEquals(byteArrayOf(9, 9), saved)
+        // The chunk is prepared before Polar writes, and the world data is in place by then
+        assertEquals(listOf("userData", "savePolar"), events.toList())
+        val worldData = MapDataSections(SectionContainerCodec.decode(platform.savedUserData.single()))
+        assertEquals(listOf(1, 2, 3), worldData[listType])
+    }
+
+    @Test
+    fun `a failing chunk preparation fails the save before polar writes anything`() = runTest {
+        val failing = object : ChunkDataHandler<String> {
+            override val type = DataType(Key.key("test", "failing"), String.serializer())
+            override fun capture(chunk: Chunk, entities: List<Entity>, claim: (Entity) -> Unit): String =
+                throw IllegalStateException("cannot capture")
+
+            override fun restore(chunk: Chunk, value: String) = Unit
+        }
+        val world = world(settings(handlers = listOf(failing)))
+        bridge.loadWorld(world, polarBytes(Triple(0, 0, emptyMap())), emptyList())
+        platform.loadChunk(platform.bukkit, 0, 0)
+        events.clear()
+
         assertThrows<IllegalStateException> { bridge.saveWorld(world) }
+
+        assertTrue("savePolar" !in events)
+        assertTrue("userData" !in events)
     }
 
     @Test
-    fun `unloadWorld unloads on the global region without saving`() = runTest {
-        worldIsLoaded()
-        var unloadThread: String? = null
-        every { Bukkit.unloadWorld(platformWorld, false) } answers {
-            unloadThread = Thread.currentThread().name
-            true
-        }
+    fun `saving a world that is not loaded fails`() = runTest {
+        assertThrows<IllegalStateException> { bridge.saveWorld(world(settings())) }
+    }
 
+    @Test
+    fun `chunk returns the live chunk with its sections`() = runTest {
+        val world = world(settings(textType))
+        val bytes = polarBytes(Triple(0, 0, mapOf(textType.key.asString() to encoded(textType, "chair"))))
+        bridge.loadWorld(world, bytes, emptyList())
+        assertNull(bridge.chunk(world, 0, 0))
+
+        platform.loadChunk(platform.bukkit, 0, 0)
+
+        assertEquals("chair", bridge.chunk(world, 0, 0)?.data?.get(textType))
+    }
+
+    @Test
+    fun `unloadWorld unloads without saving and fails when bukkit refuses`() = runTest {
+        val world = world(settings())
+        bridge.loadWorld(world, null, emptyList())
+        platform.refuseUnload = true
+
+        assertThrows<IllegalStateException> { bridge.unloadWorld(world) }
+        assertSame(platform.bukkit, bridge.bukkitWorld(world))
+
+        platform.refuseUnload = false
         bridge.unloadWorld(world)
 
-        assertEquals("global-region", unloadThread)
-        verify(exactly = 0) { Polar.saveWorld(any(), any<PolarSource>()) }
-    }
-
-    @Test
-    fun `unloadWorld unloads directly when already on the global region during shutdown`() = runTest {
-        worldIsLoaded()
-        every { Bukkit.isGlobalTickThread() } returns true
-        var unloadThread: String? = null
-        every { Bukkit.unloadWorld(platformWorld, false) } answers {
-            unloadThread = Thread.currentThread().name
-            true
-        }
-        // The plugin's dispatchers reject new coroutines while it is being disabled
-        val disabledBridge = PlatformWorldBridgePaper(
-            globalRegionContext = { error("Plugin is being disabled") },
-            emptyPolarWorld = { emptyPolarWorld }
-        )
-
-        disabledBridge.unloadWorld(world)
-
-        assertEquals(Thread.currentThread().name, unloadThread)
+        assertEquals(listOf(platform.bukkit), platform.unloaded)
+        assertTrue("savePolar" !in events)
+        assertNull(bridge.bukkitWorld(world))
     }
 
     @Test
     fun `unloadWorld does nothing for a world that is not loaded`() = runTest {
-        bridge.unloadWorld(world)
+        bridge.unloadWorld(world(settings()))
 
-        verify(exactly = 0) { Bukkit.unloadWorld(any<World>(), any()) }
-    }
-
-    @Test
-    fun `unloadWorld fails when bukkit refuses to unload`() = runTest {
-        worldIsLoaded()
-        every { Bukkit.unloadWorld(platformWorld, false) } returns false
-
-        assertThrows<IllegalStateException> { bridge.unloadWorld(world) }
-    }
-
-    @Test
-    fun `getPlatformWorld looks the world up by its polar key`() {
-        worldIsLoaded()
-
-        assertSame(platformWorld, bridge.getPlatformWorld<World>(world))
-    }
-
-    @Test
-    fun `worlds are keyed the way polar registers them`() {
-        // Polar.createWorld uses NamespacedKey.fromString(name, polarPlugin)
-        assertEquals("polarpaper:${world.uuid}", PlatformWorldBridgePaper.worldKey(world).asString())
+        assertTrue(events.isEmpty())
     }
 }

@@ -33,6 +33,11 @@ class MapDataSections(initial: Map<String, ByteArray> = emptyMap()) : DataSectio
 
     override fun contains(key: Key): Boolean = sections.containsKey(key.asString())
 
+    /** Stores an already encoded section, e.g. one read from a stored world. */
+    fun putRaw(key: String, bytes: ByteArray) {
+        sections[key] = bytes
+    }
+
     /** Snapshot of the encoded sections, for writing them out. */
     fun raw(): Map<String, ByteArray> = HashMap(sections)
 

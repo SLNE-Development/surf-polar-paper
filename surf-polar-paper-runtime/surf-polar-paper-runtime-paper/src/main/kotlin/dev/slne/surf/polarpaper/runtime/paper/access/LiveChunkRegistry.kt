@@ -26,5 +26,9 @@ class LiveChunkRegistry {
     companion object {
         /** Packs the coordinates the same way as `Chunk.getChunkKey`. */
         fun key(x: Int, z: Int): Long = (x.toLong() and 0xFFFFFFFFL) or ((z.toLong() and 0xFFFFFFFFL) shl 32)
+
+        fun chunkX(key: Long): Int = key.toInt()
+
+        fun chunkZ(key: Long): Int = (key ushr 32).toInt()
     }
 }

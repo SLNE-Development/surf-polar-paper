@@ -6,8 +6,9 @@ import dev.jorel.commandapi.kotlindsl.stringArgument
 import dev.jorel.commandapi.kotlindsl.subcommand
 import dev.slne.surf.api.core.messages.adventure.sendText
 import dev.slne.surf.api.paper.command.executors.playerExecutorSuspend
-import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
+import dev.slne.surf.polarpaper.core.client.SurfPolarPaperApiImpl
 import org.bukkit.entity.Player
+import java.util.*
 
 fun CommandAPICommand.createWorldCommand() = subcommand("create") {
     withPermission(WORLD_PERMISSION)
@@ -17,15 +18,24 @@ fun CommandAPICommand.createWorldCommand() = subcommand("create") {
     playerExecutorSuspend(commandScope) { player, arguments ->
         val gameModeIdentifier: String by arguments
 
-        createWorld(TODO("Task 8"), player, gameModeIdentifier)
+        createWorld(ownerOrFail(gameModeIdentifier), player, gameModeIdentifier)
     }
 }
 
-@Suppress("UNUSED_PARAMETER")
 internal suspend fun createWorld(
-    api: SurfPolarPaperApi,
+    api: SurfPolarPaperApiImpl,
     player: Player,
     gameModeIdentifier: String
 ) {
-    TODO("Task 8")
+    val world = api.createWorld(UUID.randomUUID(), gameModeIdentifier)
+
+    val platformWorld = platformWorldOrFail(world, "Failed to create world for game mode '$gameModeIdentifier'.")
+
+    player.teleportAsync(platformWorld.spawnLocation)
+
+    player.sendText {
+        success("World ")
+        append(world)
+        success(" created successfully.")
+    }
 }
