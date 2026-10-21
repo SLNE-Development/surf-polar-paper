@@ -34,7 +34,7 @@ internal suspend fun createWorld(
     } catch (exception: CancellationException) {
         throw exception
     } catch (exception: Exception) {
-        throw CommandAPI.failWithString("Failed to create world for game mode '$gameModeIdentifier': ${exception.message}")
+        throw CommandAPI.failWithString("Failed to create world for game mode '$gameModeIdentifier': ${exception.message ?: exception::class.simpleName}")
     }
 
     val platformWorld = platformWorldOrFail(world, "Failed to create world for game mode '$gameModeIdentifier'.")

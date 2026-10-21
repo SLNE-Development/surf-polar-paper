@@ -233,8 +233,11 @@ class SurfPolarPaperApiImpl internal constructor(
         }
     }
 
-    override suspend fun saveWorld(
-        world: SurfWorld
+    override suspend fun saveWorld(world: SurfWorld) = saveWorld(world, shutdown = false)
+
+    private suspend fun saveWorld(
+        world: SurfWorld,
+        shutdown: Boolean
     ) = withStorageProvider { storageProvider ->
         val impl = implOf(world)
         requireOwned(impl.gameModeIdentifier)
@@ -245,7 +248,7 @@ class SurfPolarPaperApiImpl internal constructor(
         }
 
         val polarBytes = try {
-            platformBridge.saveWorld(impl)
+            if (shutdown) platformBridge.saveWorldForShutdown(impl) else platformBridge.saveWorld(impl)
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: Exception) {
@@ -336,6 +339,22 @@ class SurfPolarPaperApiImpl internal constructor(
             // Only save: Paper's world manager is already closed at shutdown and worlds with players cannot be
             // unloaded then. Locks are released when the server disconnects.
             saveAllWorlds()
+        } finally {
+            ApiInstances.unregister(this)
+        }
+    }
+
+    /**
+     * [close] for the server shutdown, where the disabling thread is blocked: an autosave that is in flight may be
+     * queued behind that thread and never finish, so it is cancelled without waiting for it, and the saves only wait
+     * a bounded time for each other.
+     */
+    suspend fun closeForShutdown() {
+        if (!closed.compareAndSet(false, true)) return
+
+        autosaveJob?.cancel()
+        try {
+            forEachLoadedWorld("save") { world -> saveWorld(world, shutdown = true) }
         } finally {
             ApiInstances.unregister(this)
         }

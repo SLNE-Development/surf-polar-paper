@@ -21,6 +21,12 @@ interface PlatformWorldBridge {
     /** Serializes the world to Polar bytes, including sections and [SurfWorldImpl.data]. */
     suspend fun saveWorld(world: SurfWorldImpl): ByteArray
 
+    /**
+     * Like [saveWorld] for the server shutdown: the main thread is blocked then, so it must not wait for a save that
+     * is stuck behind it. Waits only a bounded time for other saves of the world.
+     */
+    suspend fun saveWorldForShutdown(world: SurfWorldImpl): ByteArray = saveWorld(world)
+
     /** Unloads the platform world without saving it. Does nothing if the world is not loaded. */
     suspend fun unloadWorld(world: SurfWorldImpl)
 

@@ -54,6 +54,15 @@ class SurfWorldAccess(
     /** Chunks whose stored data could not be decoded; their stored bytes are kept as they are. */
     private val undecodable = ConcurrentHashMap.newKeySet<Long>()
 
+    /** Whether the stored data of the chunk could not be decoded, so its bytes are kept as they are. */
+    fun isUndecodable(x: Int, z: Int): Boolean = LiveChunkRegistry.key(x, z) in undecodable
+
+    /** Forgets the state of a chunk that unloaded. */
+    fun forget(x: Int, z: Int) {
+        undecodable -= LiveChunkRegistry.key(x, z)
+        prepared.remove(LiveChunkRegistry.key(x, z))
+    }
+
     override fun getPlugin(): Plugin = world.api.plugin
 
     override fun loadChunkData(bukkitWorld: org.bukkit.World, chunk: ChunkAccess, userData: ByteArray?) {
@@ -113,7 +122,7 @@ class SurfWorldAccess(
             return
         }
         try {
-            val sections = live.sections(x, z) ?: MapDataSections()
+            val sections = live.getOrCreate(x, z)
             val surfChunk = SurfChunkImpl(world, chunk, sections)
             world.api.settings.chunkSaveHooks.forEach { it(surfChunk) }
 
@@ -128,9 +137,6 @@ class SurfWorldAccess(
             entities?.capture(chunk, nonPlayers.filter { it !in claimed }, sections, claimed)
 
             prepared[LiveChunkRegistry.key(x, z)] = SectionContainerCodec.encode(sections.raw())
-            // A chunk generated after the world loaded has no entry yet. Registering it once captured keeps its data
-            // reachable for gameplay code and later saves.
-            live.register(x, z, sections)
         } catch (e: Exception) {
             // The round failed, so nothing prepared so far may be written by a later save
             prepared.clear()
@@ -162,6 +168,8 @@ class SurfWorldAccess(
     }
 
     private fun bytesToWrite(chunk: Chunk): ByteArray? {
+        // Never overwrite what could not be decoded, whatever the registry holds
+        if (isUndecodable(chunk.x, chunk.z)) return existingUserData(chunk.x, chunk.z)
         prepared.remove(LiveChunkRegistry.key(chunk.x, chunk.z))?.let { return it }
         // Not prepared: write the live sections as they are, or keep what the Polar world already has
         live.sections(chunk.x, chunk.z)?.let { return SectionContainerCodec.encode(it.raw()) }

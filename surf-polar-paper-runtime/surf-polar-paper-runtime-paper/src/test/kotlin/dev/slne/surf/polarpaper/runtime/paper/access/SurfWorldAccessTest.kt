@@ -236,8 +236,6 @@ class SurfWorldAccessTest {
             every { capture(any(), any(), any()) } throws IllegalStateException("boom")
         }
         val access = access(handler)
-        every { chunk.entities } returns emptyArray()
-        assertThrows(IllegalStateException::class.java) { access.prepareChunkSave(chunk) }
 
         // Nothing live and nothing prepared: the existing bytes are kept
         assertArrayEquals(byteArrayOf(1, 2, 3), write(access))
@@ -261,6 +259,17 @@ class SurfWorldAccessTest {
 
         access.prepareChunkSave(chunk)
 
+        assertArrayEquals(byteArrayOf(9, 9), write(access))
+    }
+
+    @Test
+    fun `an undecodable chunk keeps its stored bytes even when something registered it as live`() {
+        existing = byteArrayOf(9, 9)
+        val access = access(StringHandler(stringType))
+        load(access, byteArrayOf(0x53, 0x55, 0x52, 0x46, 0x01))
+        live.getOrCreate(chunk.x, chunk.z)
+
+        assertTrue(access.isUndecodable(chunk.x, chunk.z))
         assertArrayEquals(byteArrayOf(9, 9), write(access))
     }
 

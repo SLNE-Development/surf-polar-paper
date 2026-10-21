@@ -15,11 +15,6 @@ class LiveChunkRegistry {
     /** The sections of the chunk, created empty for a chunk that became live without stored data (e.g. generated). */
     fun getOrCreate(x: Int, z: Int): MapDataSections = chunks.computeIfAbsent(key(x, z)) { MapDataSections() }
 
-    /** Registers [sections] for a chunk that has none yet. */
-    fun register(x: Int, z: Int, sections: MapDataSections) {
-        chunks.putIfAbsent(key(x, z), sections)
-    }
-
     fun put(x: Int, z: Int, sections: MapDataSections) {
         chunks[key(x, z)] = sections
     }

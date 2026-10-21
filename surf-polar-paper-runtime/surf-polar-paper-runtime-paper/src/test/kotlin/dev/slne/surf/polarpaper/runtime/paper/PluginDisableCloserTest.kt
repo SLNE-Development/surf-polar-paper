@@ -3,14 +3,19 @@ package dev.slne.surf.polarpaper.runtime.paper
 import dev.slne.surf.polarpaper.core.client.SurfPolarPaperApiImpl
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
+import kotlin.coroutines.CoroutineContext
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelChildren
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
-import io.mockk.every
 import org.bukkit.event.server.PluginDisableEvent
 import org.bukkit.plugin.Plugin
 import org.junit.jupiter.api.Assertions.assertFalse
@@ -75,12 +80,12 @@ class PluginDisableCloserTest {
     @Test
     fun `while the server stops the instances are closed inside the event without any dispatcher`() {
         // A scope whose dispatcher never runs anything: a close that is handed to it would never happen
-        val dead = kotlinx.coroutines.CoroutineScope(object : kotlinx.coroutines.CoroutineDispatcher() {
-            override fun dispatch(context: kotlin.coroutines.CoroutineContext, block: Runnable) = Unit
+        val dead = CoroutineScope(object : CoroutineDispatcher() {
+            override fun dispatch(context: CoroutineContext, block: Runnable) = Unit
         })
         val api = mockk<SurfPolarPaperApiImpl>()
         var saved = false
-        coEvery { api.close() } coAnswers { saved = true }
+        coEvery { api.closeForShutdown() } coAnswers { saved = true }
         val closer = PluginDisableCloser(dead, { true }) { listOf(api) }
 
         closer.onPluginDisable(event(disabled))
@@ -91,11 +96,11 @@ class PluginDisableCloserTest {
     @Test
     fun `awaitPending gives up after the timeout`() = runTest {
         val api = mockk<SurfPolarPaperApiImpl>()
-        coEvery { api.close() } coAnswers { kotlinx.coroutines.awaitCancellation() }
+        coEvery { api.close() } coAnswers { awaitCancellation() }
         val closer = PluginDisableCloser(this, { false }) { listOf(api) }
 
         closer.onPluginDisable(event(disabled))
-        closer.awaitPending(kotlin.time.Duration.parse("1s"))
+        closer.awaitPending(1.seconds)
 
         coVerify(exactly = 1) { api.close() }
         coroutineContext.cancelChildren()

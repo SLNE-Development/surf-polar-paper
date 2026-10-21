@@ -16,13 +16,16 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import live.minehub.polarpaper.core.world.PolarWorld
 import org.bukkit.World
+import kotlin.time.Duration
+import kotlin.time.Duration.Companion.seconds
 import java.util.concurrent.ConcurrentHashMap
 
 /** Loads, saves and unloads the Polar worlds behind [SurfWorldImpl]. The steps live in the pipeline classes. */
 @AutoService(PlatformWorldBridge::class)
 class PlatformWorldBridgePaper(
     private val platform: PaperPlatform,
-    readWorld: ((ByteArray) -> PolarWorld)?
+    readWorld: ((ByteArray) -> PolarWorld)?,
+    private val shutdownLockTimeout: Duration = 10.seconds
 ) : PlatformWorldBridge {
     constructor(platform: PaperPlatform) : this(platform, null)
 
@@ -74,6 +77,24 @@ class PlatformWorldBridgePaper(
         return savePipeline.save(world, entry)
     }
 
+    override suspend fun saveWorldForShutdown(world: SurfWorldImpl): ByteArray {
+        val entry = loaded[world] ?: throw IllegalStateException("World $world is not loaded")
+        return savePipeline.save(world, entry, shutdownLockTimeout)
+    }
+
+    /**
+     * Drops the sections of a chunk that unloaded. Polar leaves chunks that are not loaded out of its saves, so
+     * whatever the chunk held is lost from the next save on.
+     */
+    fun chunkUnloaded(bukkit: World, x: Int, z: Int) {
+        val entry = loaded.values.firstOrNull { it.bukkit == bukkit } ?: return
+        entry.access.forget(x, z)
+        if (entry.live.sections(x, z) == null) return
+
+        entry.live.remove(x, z)
+        log.atWarning().log("Chunk %s, %s of %s unloaded; polar leaves unloaded chunks out of saves", x, z, bukkit.name)
+    }
+
     override suspend fun unloadWorld(world: SurfWorldImpl) {
         val bukkit = loaded[world]?.bukkit ?: platform.findWorld(world.name) ?: return
 
@@ -87,6 +108,8 @@ class PlatformWorldBridgePaper(
 
     override fun chunk(world: SurfWorldImpl, x: Int, z: Int): SurfChunk? {
         val entry = loaded[world] ?: return null
+        // The data of an undecodable chunk must stay as stored, so no one gets a chunk to write into
+        if (entry.access.isUndecodable(x, z)) return null
         val chunk = platform.chunkIfLoaded(entry.bukkit, x, z) ?: return null
         // A chunk generated after the load has no stored data, but is a live chunk like the others
         val sections = entry.live.getOrCreate(x, z)

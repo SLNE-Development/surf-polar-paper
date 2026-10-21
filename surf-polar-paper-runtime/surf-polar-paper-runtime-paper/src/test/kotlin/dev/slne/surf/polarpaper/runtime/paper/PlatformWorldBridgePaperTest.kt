@@ -17,7 +17,12 @@ import dev.slne.surf.polarpaper.runtime.paper.access.SurfWorldAccess
 import dev.slne.surf.polarpaper.runtime.paper.pipeline.PaperPlatform
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
@@ -40,6 +45,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.util.*
+import kotlin.time.Duration.Companion.milliseconds
 import java.util.concurrent.CopyOnWriteArrayList
 
 class PlatformWorldBridgePaperTest {
@@ -122,11 +128,22 @@ class PlatformWorldBridgePaperTest {
             savedUserData += bytes
         }
 
-        var saveGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+        /** Held by the next save only, to keep it running. */
+        var saveGate: CompletableDeferred<Unit>? = null
+
+        /** Loads a chunk with exactly these stored bytes, like Polar does for a chunk of the Polar world. */
+        fun loadWithData(x: Int, z: Int, bytes: ByteArray) {
+            val chunk = mockk<Chunk>(relaxed = true) {
+                every { this@mockk.x } returns x
+                every { this@mockk.z } returns z
+            }
+            chunks[x to z] = chunk
+            access!!.load(chunk, bytes)
+        }
 
         override suspend fun savePolar(world: World, polarWorld: PolarWorld, access: PolarWorldAccess): ByteArray {
             events += "savePolar"
-            saveGate?.await()
+            saveGate?.also { saveGate = null }?.await()
             return savedBytes
         }
     }
@@ -136,7 +153,7 @@ class PlatformWorldBridgePaperTest {
     // The tests hand over a prepared world instead of bytes: Polar reads and writes with a compression library that
     // only the server provides
     private var storedWorld: PolarWorld? = null
-    private val bridge = PlatformWorldBridgePaper(platform) { requireNotNull(storedWorld) }
+    private val bridge = PlatformWorldBridgePaper(platform, { requireNotNull(storedWorld) }, 300.milliseconds)
     private val storedBytes = byteArrayOf(1)
 
     private val listType = DataType(Key.key("test", "numbers"), ListSerializer(Int.serializer()))
@@ -454,14 +471,14 @@ class PlatformWorldBridgePaperTest {
         bridge.loadWorld(world, null, emptyList())
         platform.generate(0, 0)
         events.clear()
-        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val gate = CompletableDeferred<Unit>()
         platform.saveGate = gate
 
-        val first = async(kotlinx.coroutines.Dispatchers.Default) { bridge.saveWorld(world) }
-        while (events.count { it == "savePolar" } < 1) kotlinx.coroutines.yield()
-        val second = async(kotlinx.coroutines.Dispatchers.Default) { bridge.saveWorld(world) }
+        val first = async(Dispatchers.Default) { bridge.saveWorld(world) }
+        while (events.count { it == "savePolar" } < 1) yield()
+        val second = async(Dispatchers.Default) { bridge.saveWorld(world) }
         // The second save must not start a round while the first one is still writing
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) { kotlinx.coroutines.delay(200) }
+        withContext(Dispatchers.Default) { delay(200) }
         assertEquals(1, events.count { it.startsWith("prepare:") })
 
         gate.complete(Unit)
@@ -470,5 +487,50 @@ class PlatformWorldBridgePaperTest {
 
         assertEquals(2, events.count { it == "savePolar" })
         assertEquals(listOf("prepare:0,0", "userData", "savePolar", "prepare:0,0", "userData", "savePolar"), events.toList())
+    }
+
+    @Test
+    fun `a shutdown save does not wait forever for a save that holds the lock`() = runTest {
+        val world = world(settings(handlers = listOf(capturing())))
+        bridge.loadWorld(world, null, emptyList())
+        platform.generate(0, 0)
+        // An autosave that is stuck, like one queued behind the blocked main thread
+        platform.saveGate = CompletableDeferred()
+        val stuck = async(Dispatchers.Default) { bridge.saveWorld(world) }
+        while (events.count { it == "savePolar" } < 1) yield()
+
+        val saved = withContext(Dispatchers.Default) { bridge.saveWorldForShutdown(world) }
+
+        assertArrayEquals(byteArrayOf(9, 9), saved)
+        assertEquals(2, events.count { it == "savePolar" })
+        stuck.cancel()
+    }
+
+    @Test
+    fun `chunk returns null for an undecodable chunk and a save keeps its stored bytes`() = runTest {
+        val world = world(settings())
+        bridge.loadWorld(world, null, emptyList())
+        // The container magic with an unsupported body
+        val broken = byteArrayOf(0x53, 0x55, 0x52, 0x46, 0x01)
+        platform.loadWithData(3, 3, broken)
+
+        assertNull(bridge.chunk(world, 3, 3))
+        bridge.saveWorld(world)
+
+        // The access writes the stored bytes for such a chunk, see SurfWorldAccessTest
+        assertTrue(platform.access!!.isUndecodable(3, 3))
+    }
+
+    @Test
+    fun `an unloaded chunk loses its sections`() = runTest {
+        val world = world(settings(textType))
+        val bytes = polarBytes(Triple(0, 0, mapOf(textType.key.asString() to encoded(textType, "chair"))))
+        bridge.loadWorld(world, bytes, emptyList())
+        platform.loadChunk(platform.bukkit, 0, 0)
+        assertEquals("chair", bridge.chunk(world, 0, 0)?.data?.get(textType))
+
+        bridge.chunkUnloaded(platform.bukkit, 0, 0)
+
+        assertNull(bridge.chunk(world, 0, 0)?.data?.get(textType))
     }
 }

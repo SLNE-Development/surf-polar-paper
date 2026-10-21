@@ -15,6 +15,8 @@ import dev.slne.surf.polarpaper.core.common.world.WorldCacheKey
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runCurrent
@@ -30,6 +32,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.util.*
+import kotlin.coroutines.CoroutineContext
 import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -233,6 +236,25 @@ class SurfPolarPaperApiImplTest {
         assertArrayEquals(byteArrayOf(7), storedWorldBytes(uuid, "survival"))
         assertEquals(0, bridge.count("unload:"))
         assertNull(ApiInstances.ownership.ownerOf("survival"))
+        assertTrue(ApiInstances.all.isEmpty())
+    }
+
+    @Test
+    fun `closeForShutdown does not wait for an autosave that can never run and still saves`() = runTest {
+        // An autosave queued behind the blocked shutdown thread: its dispatcher never runs anything
+        val deadScope = CoroutineScope(object : CoroutineDispatcher() {
+            override fun dispatch(context: CoroutineContext, block: Runnable) = Unit
+        })
+        val closing = SurfPolarPaperApiImpl(plugin, settings(autosave = true), { storage }, { bridge }, autosaveScope = deadScope)
+        val uuid = UUID.randomUUID()
+        store(uuid, "survival", byteArrayOf(1))
+        closing.loadWorld(uuid, "survival")
+        bridge.savedBytes = { byteArrayOf(8) }
+
+        closing.closeForShutdown()
+
+        assertArrayEquals(byteArrayOf(8), storedWorldBytes(uuid, "survival"))
+        assertEquals(1, bridge.count("save:"))
         assertTrue(ApiInstances.all.isEmpty())
     }
 

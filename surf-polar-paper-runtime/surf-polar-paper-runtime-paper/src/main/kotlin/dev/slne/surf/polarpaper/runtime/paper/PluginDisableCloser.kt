@@ -55,7 +55,13 @@ class PluginDisableCloser(
 
     private fun closeNow(api: SurfPolarPaperApiImpl, plugin: Plugin) {
         // runBlocking only runs what the saving resumes into this thread, nothing is handed to a plugin dispatcher
-        runBlocking { close(api, plugin) }
+        runBlocking {
+            try {
+                api.closeForShutdown()
+            } catch (exception: Exception) {
+                log.atSevere().withCause(exception).log("Failed to close the API of plugin %s", plugin.name)
+            }
+        }
     }
 
     private suspend fun close(api: SurfPolarPaperApiImpl, plugin: Plugin) {
