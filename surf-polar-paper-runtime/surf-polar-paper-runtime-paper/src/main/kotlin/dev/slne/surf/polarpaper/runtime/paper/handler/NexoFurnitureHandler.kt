@@ -2,7 +2,6 @@ package dev.slne.surf.polarpaper.runtime.paper.handler
 
 import com.nexomc.nexo.api.NexoFurniture
 import com.nexomc.nexo.mechanics.furniture.placements.FurniturePlacement
-import com.nexomc.nexo.mechanics.furniture.placements.PlacementType
 import com.nexomc.nexo.mechanics.furniture.seats.FurnitureSeat
 import dev.slne.surf.api.core.util.logger
 import dev.slne.surf.polarpaper.api.data.BuiltInData
@@ -27,11 +26,13 @@ internal data class BlockPos(val x: Int, val y: Int, val z: Int)
 /**
  * Undoes Nexo's `FurnitureMechanic.correctedSpawnLocation` (1.29.1) for the base entity location [x], [y], [z], which
  * Nexo derived from the placement block:
- * - the block center is used, except for fixed-transform furniture placed on top of a block (or on a wall with a
- *   solid block below it), which sits at the block's bottom;
+ * - the block center is used, except for fixed-transform furniture placed on top of a block, or on a horizontal face
+ *   with a solid block below it and the furniture not wall-limited, which sits at the block's bottom;
  * - roof furniture hung from the ceiling ([roof] and [face] DOWN) is raised by 0.49;
  * - fixed-transform wall furniture without solid ground below is moved against its wall by `0.49 * scaleY * 2`.
- * [solidBelow] tells whether the block below the given block is solid.
+ * [solidBelow] tells whether the block below the given block is solid. Nexo evaluated that when it placed the
+ * furniture, so if the block below changed solidity since, the inversion can pick the neighbouring block for fixed
+ * wall furniture.
  */
 internal fun invertSpawnCorrection(
     x: Double, y: Double, z: Double, face: BlockFace,
@@ -49,6 +50,33 @@ internal fun invertSpawnCorrection(
         floor(x + face.modX * shift + epsilon).toInt(), by, floor(z + face.modZ * shift + epsilon).toInt()
     )
     return if (solidBelow(candidate.x, candidate.y - 1, candidate.z)) plain else candidate
+}
+
+/**
+ * The face a furniture piece was placed against, mirroring `placedPitch` of Nexo 1.29.1. [placement] is the type Nexo
+ * stored on the entity, which it only does for furniture with a `placements` section; otherwise the face comes from
+ * the `limited_placing` flags: the pitch is 90 for fixed roof furniture, -90 for fixed wall furniture, and 0 for
+ * everything else, so non-fixed roof-only furniture is recognised by being roof-limited alone.
+ */
+internal fun deriveFace(
+    placement: String?, wall: Boolean, roof: Boolean, floor: Boolean, pitch: Float, yaw: Float
+): BlockFace {
+    fun horizontal() = when (Math.floorMod(Math.round(yaw / 90f), 4)) {
+        0 -> BlockFace.SOUTH
+        1 -> BlockFace.WEST
+        2 -> BlockFace.NORTH
+        else -> BlockFace.EAST
+    }
+    return when (placement) {
+        "ROOF" -> BlockFace.DOWN
+        "WALL" -> horizontal()
+        "FLOOR" -> BlockFace.UP
+        else -> when {
+            roof && (pitch >= 45f || !wall && !floor) -> BlockFace.DOWN
+            wall && (pitch <= -45f && !floor || !roof && !floor) -> horizontal()
+            else -> BlockFace.UP
+        }
+    }
 }
 
 /**
@@ -115,16 +143,14 @@ private object RealNexoFurnitureApi : NexoFurnitureApi {
 
     override fun isSeat(entity: Entity): Boolean = FurnitureSeat.isSeat(entity)
 
-    override fun placementFace(display: ItemDisplay): BlockFace = when (FurniturePlacement.placementType(display)) {
-        PlacementType.ROOF -> BlockFace.DOWN
-        // Wall furniture faces away from its wall, and yaw 0 faces south
-        PlacementType.WALL -> when (Math.floorMod(Math.round(display.location.yaw / 90f), 4)) {
-            0 -> BlockFace.SOUTH
-            1 -> BlockFace.WEST
-            2 -> BlockFace.NORTH
-            else -> BlockFace.EAST
-        }
-        else -> BlockFace.UP
+    override fun placementFace(display: ItemDisplay): BlockFace {
+        val limited = NexoFurniture.furnitureMechanic(display as Entity)?.limitedPlacing
+        val location = display.location
+        return deriveFace(
+            FurniturePlacement.placementType(display)?.name,
+            limited?.isWall == true, limited?.isRoof == true, limited?.isFloor == true,
+            location.pitch, location.yaw
+        )
     }
 
     override fun placementBlock(display: ItemDisplay): BlockPos {
