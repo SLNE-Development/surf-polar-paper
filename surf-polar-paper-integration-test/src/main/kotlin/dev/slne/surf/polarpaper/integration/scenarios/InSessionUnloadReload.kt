@@ -70,6 +70,9 @@ class InSessionUnloadReload(plugin: IntegrationTestPlugin) : Scenario("in-sessio
         context.ticks(10)
         val before = context.onMain { counts(chunk) }
         expectEquals(1, before.stands, "Marked armor stands before the unload")
+        // Without these the comparison below could not fail: the furniture has to exist exactly once to begin with
+        if (CraftEngineSupport.isInstalled()) expectEquals(1, before.craftEngine, "CraftEngine furniture before the unload")
+        if (NexoSupport.isInstalled()) expectEquals(1, before.nexo, "Nexo furniture before the unload")
 
         // Out of memory and back, in the same session
         context.onMain {

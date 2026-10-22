@@ -13,6 +13,7 @@ fun allScenarios(plugin: IntegrationTestPlugin): List<Scenario> = listOf(
     NewerWorldRefused(),
     FailingMigration(),
     UnhandledSectionAborts(),
+    UnhandledSectionAfterChunkUnload(),
     PipelineRealPolarCalls(),
     GeneratedChunkSurvivesUnload(plugin),
     CraftEngineRoundTrip(),
