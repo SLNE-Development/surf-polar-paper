@@ -12,6 +12,9 @@ abstract class WorldMigration(val toVersion: Int) {
     /** Whether [migrateLive] must run for this migration. */
     open val hasLiveStage: Boolean get() = false
 
-    /** Runs for every chunk after all raw stages, on that chunk's region thread. */
+    /**
+     * Runs for every chunk after all raw stages, on that chunk's region thread. The world is still being loaded, so
+     * this must not save, unload or delete it through the API (that call would wait on the load forever).
+     */
     open fun migrateLive(chunk: SurfChunk) {}
 }

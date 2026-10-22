@@ -67,9 +67,12 @@ interface SurfPolarPaperApi {
     ): SurfWorld?
 
     /**
-     * Stops autosave, saves the worlds of this instance and frees its game modes. The worlds stay loaded, because
-     * at shutdown the server has already closed its worlds and worlds with players cannot be unloaded.
-     * Safe to call twice.
+     * Stops autosave, saves and unloads the worlds of this instance, releases their locks and frees its game modes.
+     * A world Bukkit refuses to unload (for example one with players) stays loaded, saved and locked. Further calls
+     * on this instance throw. Safe to call twice.
+     *
+     * The instance is closed automatically when its plugin is disabled; at server stop that close only saves the
+     * worlds, because the server has already closed its world manager.
      */
     suspend fun close()
 
