@@ -78,6 +78,9 @@ internal interface CraftEngineFurnitureApi {
      * the second add until it finished restoring the chunk's entities, which leaves a placed piece untracked.
      */
     fun ensureTracked(entity: Entity): Boolean
+
+    /** Removes a furniture base entity that CraftEngine does not track, together with the colliders around it. */
+    fun discard(entity: Entity)
 }
 
 private object RealCraftEngineFurnitureApi : CraftEngineFurnitureApi {
@@ -131,6 +134,11 @@ private object RealCraftEngineFurnitureApi : CraftEngineFurnitureApi {
 
     override fun applyExtra(entity: Entity, bytes: ByteArray) {
         entity.persistentDataContainer.readFromBytes(bytes, false)
+    }
+
+    override fun discard(entity: Entity) {
+        entity.getNearbyEntities(4.0, 4.0, 4.0).filter { isCollider(it) }.forEach { it.remove() }
+        entity.remove()
     }
 
     override fun chunkReady(chunk: Chunk): Boolean = chunk.loadLevel == Chunk.LoadLevel.ENTITY_TICKING
@@ -299,7 +307,7 @@ class CraftEngineFurnitureHandler internal constructor(
 
             // Live from here on: the record must not be emitted again, even if reapplying its state fails
             synchronized(entry.records) { entry.records.remove(record) }
-            run(chunk, Runnable { verifyTracked(chunk, entity, record.id, 1) })
+            run(chunk, Runnable { verifyTracked(chunk, entity, record, resolved, 1, replace = true) })
             try {
                 record.properties["pdc"]?.let { craftEngine.applyExtra(entity, Base64.getDecoder().decode(it)) }
             } catch (e: Exception) {
@@ -309,21 +317,37 @@ class CraftEngineFurnitureHandler internal constructor(
         }
     }
 
-    /** Makes sure CraftEngine still tracks the placed [entity] a tick later, see [CraftEngineFurnitureApi.ensureTracked]. */
-    private fun verifyTracked(chunk: Chunk, entity: Entity, id: String, attempt: Int) {
+    /**
+     * Makes sure CraftEngine still tracks the placed [entity] a tick later, see [CraftEngineFurnitureApi.ensureTracked].
+     * A piece that stays untracked is removed and placed once more ([replace]); a second one that is untracked too is
+     * left as it is and logged.
+     */
+    private fun verifyTracked(chunk: Chunk, entity: Entity, record: FurnitureRecord, id: String, attempt: Int, replace: Boolean) {
         if (!entity.isValid) return
         val tracked = try {
             craftEngine.ensureTracked(entity)
         } catch (e: Exception) {
-            log.atWarning().withCause(e).log("Could not check whether CraftEngine tracks the furniture %s: %s", id, e.message)
+            log.atWarning().withCause(e).log("Could not check whether CraftEngine tracks the furniture %s: %s", record.id, e.message)
             return
         }
         if (tracked) return
 
-        if (attempt < MAX_ATTEMPTS) {
-            run(chunk, Runnable { verifyTracked(chunk, entity, id, attempt + 1) })
-        } else {
-            log.atWarning().log("CraftEngine does not track the placed furniture %s at chunk %s, %s", id, chunk.x, chunk.z)
+        if (attempt < UNTRACKED_ATTEMPTS) {
+            run(chunk, Runnable { verifyTracked(chunk, entity, record, id, attempt + 1, replace) })
+            return
+        }
+        if (!replace) {
+            log.atWarning().log("CraftEngine does not track the placed furniture %s at chunk %s, %s", record.id, chunk.x, chunk.z)
+            return
+        }
+
+        try {
+            craftEngine.discard(entity)
+            val again = place(chunk, record, id) ?: return
+            record.properties["pdc"]?.let { craftEngine.applyExtra(again, Base64.getDecoder().decode(it)) }
+            run(chunk, Runnable { verifyTracked(chunk, again, record, id, 1, replace = false) })
+        } catch (e: Exception) {
+            log.atSevere().withCause(e).log("Could not place craftengine furniture %s again: %s", record.id, e.message)
         }
     }
 
@@ -345,5 +369,8 @@ class CraftEngineFurnitureHandler internal constructor(
     private companion object {
         /** Ticks to wait for a chunk to become live before leaving its records pending. */
         const val MAX_ATTEMPTS = 200
+
+        /** Ticks to wait for CraftEngine to track a placed piece before it is placed again. */
+        const val UNTRACKED_ATTEMPTS = 5
     }
 }

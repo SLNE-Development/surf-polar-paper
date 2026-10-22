@@ -62,6 +62,11 @@ class CraftEngineHandlersTest {
             appliedExtras += bytes
         }
 
+        var discarded = 0
+        override fun discard(entity: Entity) {
+            discarded++
+        }
+
         var trackedAfterCalls = 0
         override fun ensureTracked(entity: Entity): Boolean = ++trackedAfterCalls > untrackedChecks
     }
@@ -336,5 +341,21 @@ class CraftEngineHandlersTest {
         queued.removeFirst().run()
 
         assertEquals(1, craftEngine.placed.size)
+    }
+
+    @Test
+    fun `a furniture that stays untracked is removed and placed once more`() {
+        craftEngine.known = setOf("default:chair")
+        craftEngine.untrackedChecks = Int.MAX_VALUE
+        every { craftEngine.entity.isValid } returns true
+
+        deferred.restore(chunk, listOf(FurnitureRecord("default:chair", 1.5, 64.5, 3.5, 90f, 10f)))
+        var runs = 0
+        while (queued.isNotEmpty() && runs++ < 100) queued.removeFirst().run()
+
+        // Placed, discarded after the checks, placed again, and then left alone when it stays untracked
+        assertEquals(2, craftEngine.placed.size)
+        assertEquals(1, craftEngine.discarded)
+        assertTrue(queued.isEmpty())
     }
 }
