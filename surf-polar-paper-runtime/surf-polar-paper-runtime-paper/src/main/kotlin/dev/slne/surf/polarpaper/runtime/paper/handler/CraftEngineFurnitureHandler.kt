@@ -14,6 +14,7 @@ import org.bukkit.Bukkit
 import org.bukkit.Chunk
 import org.bukkit.Location
 import org.bukkit.entity.Entity
+import org.bukkit.entity.ItemDisplay
 import org.bukkit.persistence.PersistentDataType
 import org.bukkit.plugin.Plugin
 import java.util.Base64
@@ -60,6 +61,23 @@ internal interface CraftEngineFurnitureApi {
 
     /** Merges [bytes] from [extraBytes] onto the persistent data of [entity] without clearing it. */
     fun applyExtra(entity: Entity, bytes: ByteArray)
+
+    /**
+     * Whether [chunk] settled as an entity ticking chunk. While a chunk is still changing its load level, its entities
+     * can leave and enter the world again within a tick, which CraftEngine does not always follow: it unregisters the
+     * furniture on the first and skips the second in a world it does not store itself.
+     */
+    fun chunkReady(chunk: Chunk): Boolean
+
+    /**
+     * Whether CraftEngine tracks [entity] as a live furniture. When it does not, asks CraftEngine to register the entity as
+     * it does for a single entity that enters the world, and returns whether that worked.
+     *
+     * CraftEngine registers furniture when its entity is added to the world and unregisters it when it is removed. A
+     * chunk that is still being set up can remove and add the entity again within the same tick, and CraftEngine skips
+     * the second add until it finished restoring the chunk's entities, which leaves a placed piece untracked.
+     */
+    fun ensureTracked(entity: Entity): Boolean
 }
 
 private object RealCraftEngineFurnitureApi : CraftEngineFurnitureApi {
@@ -113,6 +131,14 @@ private object RealCraftEngineFurnitureApi : CraftEngineFurnitureApi {
 
     override fun applyExtra(entity: Entity, bytes: ByteArray) {
         entity.persistentDataContainer.readFromBytes(bytes, false)
+    }
+
+    override fun chunkReady(chunk: Chunk): Boolean = chunk.loadLevel == Chunk.LoadLevel.ENTITY_TICKING
+
+    override fun ensureTracked(entity: Entity): Boolean {
+        if (CraftEngineFurniture.getLoadedFurnitureByMetaEntity(entity) != null) return true
+        (entity as? ItemDisplay)?.let { BukkitFurnitureManager.instance().handleFurnitureEntityAdded(it) }
+        return CraftEngineFurniture.getLoadedFurnitureByMetaEntity(entity) != null
     }
 }
 
@@ -241,7 +267,7 @@ class CraftEngineFurnitureHandler internal constructor(
         // The chunk unloaded, or unloaded and reloaded with a newer entry, since this task was queued
         if (pending[key(chunk)] !== entry) return
 
-        if (!chunkLive(chunk)) {
+        if (!chunkLive(chunk) || !craftEngine.chunkReady(chunk)) {
             // A chunk is handed to the load hook before it is fully loaded, so it can take a few ticks to become live
             if (attempt < MAX_ATTEMPTS) {
                 run(chunk, Runnable { placePending(chunk, entry, attempt + 1) })
@@ -273,12 +299,31 @@ class CraftEngineFurnitureHandler internal constructor(
 
             // Live from here on: the record must not be emitted again, even if reapplying its state fails
             synchronized(entry.records) { entry.records.remove(record) }
+            run(chunk, Runnable { verifyTracked(chunk, entity, record.id, 1) })
             try {
                 record.properties["pdc"]?.let { craftEngine.applyExtra(entity, Base64.getDecoder().decode(it)) }
             } catch (e: Exception) {
                 log.atSevere().withCause(e)
                     .log("Placed craftengine furniture %s but could not restore its extra data: %s", record.id, e.message)
             }
+        }
+    }
+
+    /** Makes sure CraftEngine still tracks the placed [entity] a tick later, see [CraftEngineFurnitureApi.ensureTracked]. */
+    private fun verifyTracked(chunk: Chunk, entity: Entity, id: String, attempt: Int) {
+        if (!entity.isValid) return
+        val tracked = try {
+            craftEngine.ensureTracked(entity)
+        } catch (e: Exception) {
+            log.atWarning().withCause(e).log("Could not check whether CraftEngine tracks the furniture %s: %s", id, e.message)
+            return
+        }
+        if (tracked) return
+
+        if (attempt < MAX_ATTEMPTS) {
+            run(chunk, Runnable { verifyTracked(chunk, entity, id, attempt + 1) })
+        } else {
+            log.atWarning().log("CraftEngine does not track the placed furniture %s at chunk %s, %s", id, chunk.x, chunk.z)
         }
     }
 

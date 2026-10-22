@@ -35,6 +35,9 @@ class CraftEngineHandlersTest {
         var known = setOf<String>()
         val mappings = mutableMapOf<String, String>()
         var failExtra: RuntimeException? = null
+        var untrackedChecks = 0
+        var chunkReady = true
+        override fun chunkReady(chunk: Chunk) = chunkReady
         val entity = mockk<Entity>(relaxed = true)
 
         class Place(val id: String, val location: Location, val state: ByteArray?)
@@ -58,6 +61,9 @@ class CraftEngineHandlersTest {
             failExtra?.let { throw it }
             appliedExtras += bytes
         }
+
+        var trackedAfterCalls = 0
+        override fun ensureTracked(entity: Entity): Boolean = ++trackedAfterCalls > untrackedChecks
     }
 
     private val worldId = UUID.randomUUID()
@@ -189,7 +195,7 @@ class CraftEngineHandlersTest {
         deferred.restore(chunk, listOf(chair))
         deferred.chunkUnloaded(4, -2)
         deferred.restore(chunk, listOf(chair))
-        queued.forEach { it.run() }
+        while (queued.isNotEmpty()) queued.removeFirst().run()
 
         assertEquals(1, craftEngine.placed.size)
     }
@@ -297,5 +303,38 @@ class CraftEngineHandlersTest {
 
         assertEquals(listOf("default:chair"), craftEngine.placed.map { it.id })
         assertNull(deferred.capture(chunk, emptyList()) { })
+    }
+
+    @Test
+    fun `a placed furniture that craftengine does not track is checked again until it does`() {
+        craftEngine.known = setOf("default:chair")
+        craftEngine.untrackedChecks = 2
+        every { craftEngine.entity.isValid } returns true
+
+        deferred.restore(chunk, listOf(FurnitureRecord("default:chair", 1.5, 64.5, 3.5, 90f, 10f)))
+        queued.removeFirst().run()
+        queued.removeFirst().run()
+        assertEquals(1, craftEngine.trackedAfterCalls)
+        queued.removeFirst().run()
+        queued.removeFirst().run()
+
+        assertEquals(3, craftEngine.trackedAfterCalls)
+        assertTrue(queued.isEmpty())
+    }
+
+    @Test
+    fun `placement waits until the chunk is entity ticking`() {
+        craftEngine.known = setOf("default:chair")
+        craftEngine.chunkReady = false
+
+        deferred.restore(chunk, listOf(FurnitureRecord("default:chair", 1.5, 64.5, 3.5, 90f, 10f)))
+        queued.removeFirst().run()
+        queued.removeFirst().run()
+        assertTrue(craftEngine.placed.isEmpty())
+
+        craftEngine.chunkReady = true
+        queued.removeFirst().run()
+
+        assertEquals(1, craftEngine.placed.size)
     }
 }
