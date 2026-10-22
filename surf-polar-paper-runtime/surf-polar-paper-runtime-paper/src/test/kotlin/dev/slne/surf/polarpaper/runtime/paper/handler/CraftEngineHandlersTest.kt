@@ -358,4 +358,28 @@ class CraftEngineHandlersTest {
         assertEquals(1, craftEngine.discarded)
         assertTrue(queued.isEmpty())
     }
+
+    @Test
+    fun `a chunk that stays below entity ticking is placed into after the settle time`() {
+        craftEngine.known = setOf("default:chair")
+        craftEngine.chunkReady = false
+
+        deferred.restore(chunk, listOf(FurnitureRecord("default:chair", 1.5, 64.5, 3.5, 90f, 10f)))
+        var runs = 0
+        while (craftEngine.placed.isEmpty() && queued.isNotEmpty() && runs++ < 500) queued.removeFirst().run()
+
+        assertEquals(1, craftEngine.placed.size)
+        assertTrue(runs > 10, "placed after $runs runs, before the chunk could settle")
+    }
+
+    @Test
+    fun `only colliders that no tracked furniture owns are discarded`() {
+        val own = mockk<Entity>(relaxed = true)
+        val neighbours = mockk<Entity>(relaxed = true)
+        val notCollider = mockk<Entity>(relaxed = true)
+
+        val result = orphanColliders(listOf(own, neighbours, notCollider), { it !== notCollider }) { it === neighbours }
+
+        assertEquals(listOf(own), result)
+    }
 }

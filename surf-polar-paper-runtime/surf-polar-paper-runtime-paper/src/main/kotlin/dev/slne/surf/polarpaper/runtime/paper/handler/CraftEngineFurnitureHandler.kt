@@ -63,7 +63,7 @@ internal interface CraftEngineFurnitureApi {
     fun applyExtra(entity: Entity, bytes: ByteArray)
 
     /**
-     * Whether [chunk] settled as an entity ticking chunk. While a chunk is still changing its load level, its entities
+     * Whether [chunk] settled as an entity ticking chunk. A chunk that stays at a lower level is placed into anyway. While a chunk is still changing its load level, its entities
      * can leave and enter the world again within a tick, which CraftEngine does not always follow: it unregisters the
      * furniture on the first and skips the second in a world it does not store itself.
      */
@@ -79,7 +79,7 @@ internal interface CraftEngineFurnitureApi {
      */
     fun ensureTracked(entity: Entity): Boolean
 
-    /** Removes a furniture base entity that CraftEngine does not track, together with the colliders around it. */
+    /** Removes a furniture base entity that CraftEngine does not track, together with the colliders that are its own. */
     fun discard(entity: Entity)
 }
 
@@ -137,7 +137,11 @@ private object RealCraftEngineFurnitureApi : CraftEngineFurnitureApi {
     }
 
     override fun discard(entity: Entity) {
-        entity.getNearbyEntities(4.0, 4.0, 4.0).filter { isCollider(it) }.forEach { it.remove() }
+        // The colliders of a furniture piece CraftEngine tracks are mapped to it. The colliders of the piece that is
+        // discarded lost that mapping together with the tracking, so what is left unmapped nearby is its own.
+        orphanColliders(entity.getNearbyEntities(4.0, 4.0, 4.0), ::isCollider) {
+            CraftEngineFurniture.getLoadedFurnitureByCollider(it) != null
+        }.forEach { it.remove() }
         entity.remove()
     }
 
@@ -162,6 +166,10 @@ internal fun placeRecovering(place: () -> Entity?, find: () -> Entity?): Entity?
     }
     return placed ?: find()
 }
+
+/** The colliders in [nearby] that no tracked furniture owns. */
+internal fun orphanColliders(nearby: List<Entity>, isCollider: (Entity) -> Boolean, isOwned: (Entity) -> Boolean): List<Entity> =
+    nearby.filter { isCollider(it) && !isOwned(it) }
 
 /** Records restored into a chunk that are not placed yet. */
 private class PendingFurniture(val records: MutableList<FurnitureRecord>)
@@ -275,7 +283,10 @@ class CraftEngineFurnitureHandler internal constructor(
         // The chunk unloaded, or unloaded and reloaded with a newer entry, since this task was queued
         if (pending[key(chunk)] !== entry) return
 
-        if (!chunkLive(chunk) || !craftEngine.chunkReady(chunk)) {
+        // A chunk that is loaded but never becomes entity ticking (outside the simulation distance of the players)
+        // is placed into after SETTLE_ATTEMPTS, the tracking check below covers what that risks
+        val settled = craftEngine.chunkReady(chunk) || attempt > SETTLE_ATTEMPTS
+        if (!chunkLive(chunk) || !settled) {
             // A chunk is handed to the load hook before it is fully loaded, so it can take a few ticks to become live
             if (attempt < MAX_ATTEMPTS) {
                 run(chunk, Runnable { placePending(chunk, entry, attempt + 1) })
@@ -369,6 +380,9 @@ class CraftEngineFurnitureHandler internal constructor(
     private companion object {
         /** Ticks to wait for a chunk to become live before leaving its records pending. */
         const val MAX_ATTEMPTS = 200
+
+        /** Ticks to wait for a chunk to become entity ticking before placing into it anyway. */
+        const val SETTLE_ATTEMPTS = 40
 
         /** Ticks to wait for CraftEngine to track a placed piece before it is placed again. */
         const val UNTRACKED_ATTEMPTS = 5
