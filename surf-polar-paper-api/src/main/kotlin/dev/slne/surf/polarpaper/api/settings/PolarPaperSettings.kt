@@ -45,6 +45,8 @@ class GameModeSettingsBuilder internal constructor(private val identifier: Strin
         require(version >= 0) { "Game mode '$identifier' has a negative version $version" }
 
         migrations.groupBy { it.toVersion }.forEach { (to, list) ->
+            // Migration N upgrades N-1 to N, so there is no migration to the first version
+            require(to >= 1) { "Game mode '$identifier' has a migration to version $to, versions start at 1" }
             require(list.size == 1) { "Game mode '$identifier' has ${list.size} migrations to version $to" }
             require(to <= version) {
                 "Game mode '$identifier' has a migration to version $to above its current version $version"

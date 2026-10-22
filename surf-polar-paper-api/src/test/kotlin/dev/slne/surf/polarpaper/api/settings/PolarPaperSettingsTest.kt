@@ -7,6 +7,7 @@ import kotlinx.serialization.builtins.serializer
 import net.kyori.adventure.key.Key
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNull
+import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 
@@ -34,6 +35,15 @@ class PolarPaperSettingsTest {
         assertThrows<IllegalArgumentException> {
             polarPaperSettings { gameMode("skyblock") { version = 2; migration(migration(3)) } }
         }
+    }
+
+    @Test
+    fun `rejects a migration to a version below 1`() {
+        val exception = assertThrows<IllegalArgumentException> {
+            polarPaperSettings { gameMode("skyblock") { version = 2; migration(migration(0)) } }
+        }
+
+        assertTrue(exception.message!!.contains("versions start at 1"), exception.message)
     }
 
     @Test

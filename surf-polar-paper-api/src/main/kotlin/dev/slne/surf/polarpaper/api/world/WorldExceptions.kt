@@ -26,7 +26,8 @@ class WorldMigrationException(
     val toVersion: Int,
     cause: Throwable
 ) : IllegalStateException(
-    "Migration of world $gameModeIdentifier-$worldUuid to version $toVersion failed: ${cause.message}",
+    "Migration of world $gameModeIdentifier-$worldUuid to version $toVersion failed: " +
+            (cause.message ?: cause::class.simpleName),
     cause
 )
 
