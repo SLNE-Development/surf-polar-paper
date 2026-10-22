@@ -7,6 +7,11 @@ on:
       - feat/**
       - version/**
 
+# A pull request from a feat/** branch also triggers the push, so the older run is cancelled
+concurrency:
+  group: integration-test-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
 jobs:
   integration-test:
     name: Real server scenarios

@@ -15,5 +15,5 @@ dependencies {
     api("aws.sdk.kotlin:s3:1.9.14")
 
     // Chunk and world types are part of the client API. The server provides them at runtime.
-    compileOnly("io.papermc.paper:paper-api:26.3.build.+")
+    compileOnly("io.papermc.paper:paper-api:26.3.build.211-stable")
 }

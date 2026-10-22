@@ -42,6 +42,7 @@ dependencies {
 
 // ---- Real server run -------------------------------------------------------------------------------------------
 
+// The build the dev bundle and the published paper-api (surf-polar-paper-api, core-client) are pinned to
 val pinnedPaperBuild = 211
 
 // Jars from the surf reposilite. Not transitive: they are whole plugins, not libraries.

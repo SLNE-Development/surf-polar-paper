@@ -12,5 +12,5 @@ publishing {
 
 dependencies {
     // Chunk, world and plugin types appear in the public API. The server provides them at runtime.
-    compileOnlyApi("io.papermc.paper:paper-api:26.3.build.+")
+    compileOnlyApi("io.papermc.paper:paper-api:26.3.build.211-stable")
 }
