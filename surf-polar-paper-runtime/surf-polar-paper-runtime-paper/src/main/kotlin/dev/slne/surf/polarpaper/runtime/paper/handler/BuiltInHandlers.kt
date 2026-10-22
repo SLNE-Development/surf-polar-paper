@@ -21,7 +21,7 @@ import org.bukkit.plugin.Plugin
  * load and their data is not persisted, and constant renderers are lost unless CraftEngine rebuilds its sections.
  * CraftEngine needs `chunk-system.sync-custom-blocks-on-chunk-load: true` (global only) for that rebuild, and Polar
  * worlds should be listed in `chunk-system.blacklisted-worlds` so stale `<world dir>/craftengine/` region data cannot
- * overwrite Polar's block states. The furniture handler warns once when the sync option is off.
+ * overwrite Polar's block states. The furniture handler warns on every world load when the sync option is off.
  */
 object BuiltInHandlers {
     fun resolve(builtIns: Set<BuiltInHandler>, plugin: Plugin): List<ChunkDataHandler<*>> {

@@ -117,8 +117,12 @@ class PlatformWorldBridgePaperTest {
             events += "ticket+:$x,$z"
         }
 
+        /** Runs after a chunk lost its ticket, like the unload of a chunk that nothing keeps loaded anymore. */
+        var afterTicketRemoved: ((Chunk) -> Unit)? = null
+
         override fun removeTicket(world: World, x: Int, z: Int, plugin: Plugin) {
             events += "ticket-:$x,$z"
+            chunks[x to z]?.let { afterTicketRemoved?.invoke(it) }
         }
 
         override suspend fun <T> onChunkThread(world: World, x: Int, z: Int, block: () -> T): T = block()
@@ -288,6 +292,24 @@ class PlatformWorldBridgePaperTest {
         // The platform world exists during live stages, so it has to be unloaded again
         assertEquals(listOf(platform.bukkit), platform.unloaded)
         assertNull(bridge.chunk(world, 0, 0))
+    }
+
+    @Test
+    fun `a chunk that unloaded during the live stages is still checked for unhandled sections`() = runTest {
+        val world = world(settings())
+        val bytes = polarBytes(
+            Triple(0, 0, mapOf(nexoKey.asString() to nexoBytes)),
+            Triple(1, 0, emptyMap())
+        )
+        // Chunk 0,0 unloads right after its live stage, so it is gone from the live registry when the check runs
+        platform.afterTicketRemoved = { chunk -> if (chunk.x == 0) bridge.chunkUnloaded(platform.bukkit, chunk) }
+
+        val exception = assertThrows<UnhandledWorldDataException> {
+            bridge.loadWorld(world, bytes, listOf(recording(2, live = true)))
+        }
+
+        assertEquals(setOf(nexoKey), exception.keys)
+        assertEquals(listOf(platform.bukkit), platform.unloaded)
     }
 
     @Test

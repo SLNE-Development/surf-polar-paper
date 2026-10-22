@@ -46,6 +46,7 @@ class SurfWorldAccessTest {
     ) : ChunkDataHandler<String> {
         var seenEntities: List<Entity> = emptyList()
         var restored: String? = null
+        var unloadedIn: List<Triple<World, Int, Int>> = emptyList()
         var toClaim: List<Entity> = emptyList()
 
         override fun isAvailable() = available
@@ -59,6 +60,10 @@ class SurfWorldAccessTest {
         override fun restore(chunk: Chunk, value: String) {
             log += "restore"
             restored = value
+        }
+
+        override fun chunkUnloaded(world: World, x: Int, z: Int) {
+            unloadedIn += Triple(world, x, z)
         }
     }
 
@@ -365,6 +370,35 @@ class SurfWorldAccessTest {
 
         assertArrayEquals(bytes, SectionContainerCodec.encode(live.sections(2, -3)!!.raw()))
         assertEquals("captured", handler.restored)
+    }
+
+    @Test
+    fun `handlers learn the world of a chunk that unloaded`() {
+        val handler = StringHandler(stringType)
+        val access = access(handler)
+        every { chunk.entities } returns emptyArray()
+
+        access.chunkUnloading(chunk)
+
+        assertEquals(listOf(Triple(bukkitWorld, 2, -3)), handler.unloadedIn)
+    }
+
+    @Test
+    fun `the section keys of unloaded chunks are listed until the chunk loads again`() {
+        val access = access()
+        every { chunk.entities } returns emptyArray()
+        val sections = MapDataSections()
+        sections.putRaw("test:orphan", byteArrayOf(1))
+        live.put(2, -3, sections)
+
+        access.chunkUnloading(chunk)
+        live.remove(2, -3)
+
+        assertEquals(setOf(Key.key("test", "orphan")), access.unloadedSectionKeys())
+
+        access.load(chunk, null)
+
+        assertTrue(access.unloadedSectionKeys().isEmpty())
     }
 
     @Test

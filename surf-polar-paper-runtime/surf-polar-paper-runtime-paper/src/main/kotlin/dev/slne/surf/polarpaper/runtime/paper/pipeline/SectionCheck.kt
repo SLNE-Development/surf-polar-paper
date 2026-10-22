@@ -6,6 +6,7 @@ import dev.slne.surf.polarpaper.api.world.UnhandledWorldDataException
 import dev.slne.surf.polarpaper.core.client.data.SectionContainerCodec
 import dev.slne.surf.polarpaper.core.client.world.SurfWorldImpl
 import dev.slne.surf.polarpaper.runtime.paper.access.LiveChunkRegistry
+import dev.slne.surf.polarpaper.runtime.paper.access.SurfWorldAccess
 import live.minehub.polarpaper.core.world.PolarWorld
 import net.kyori.adventure.key.Key
 
@@ -32,10 +33,14 @@ class SectionCheck(settings: PolarPaperSettings, handlers: WorldHandlers) {
         fail(world, keys)
     }
 
-    /** Checks the sections of every live chunk and the world data of [world], after all live stages. */
-    fun verifyLive(world: SurfWorldImpl, live: LiveChunkRegistry) {
+    /**
+     * Checks the sections of every live chunk, of every chunk that unloaded during the live stages (see
+     * [SurfWorldAccess.unloadedSectionKeys]) and the world data of [world], after all live stages.
+     */
+    fun verifyLive(world: SurfWorldImpl, live: LiveChunkRegistry, access: SurfWorldAccess) {
         val keys = HashSet<Key>(world.data.keys)
         live.all().values.forEach { keys += it.keys }
+        keys += access.unloadedSectionKeys()
         fail(world, keys)
     }
 

@@ -13,6 +13,7 @@ import net.momirealms.craftengine.core.util.Key
 import org.bukkit.Bukkit
 import org.bukkit.Chunk
 import org.bukkit.Location
+import org.bukkit.World
 import org.bukkit.entity.Entity
 import org.bukkit.entity.ItemDisplay
 import org.bukkit.persistence.PersistentDataType
@@ -268,7 +269,7 @@ class CraftEngineFurnitureHandler internal constructor(
         return (unplaced + records).ifEmpty { null }
     }
 
-    override fun chunkUnloaded(x: Int, z: Int) {
+    override fun chunkUnloaded(world: World, x: Int, z: Int) {
         pending.remove(key(x, z))
     }
 

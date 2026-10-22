@@ -66,7 +66,7 @@ class WorldLoadPipeline(
 
         if (liveMigrations.isNotEmpty()) {
             runLiveStages(world, loaded, liveMigrations)
-            check.verifyLive(world, live)
+            check.verifyLive(world, live, access)
         }
         return loaded
     }

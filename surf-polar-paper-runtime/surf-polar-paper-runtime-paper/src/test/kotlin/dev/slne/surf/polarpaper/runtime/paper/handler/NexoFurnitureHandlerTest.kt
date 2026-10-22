@@ -220,7 +220,7 @@ class NexoFurnitureHandlerTest {
     fun `unloading the chunk releases its pending records`() {
         deferred.restore(chunk, listOf(FurnitureRecord("gone", 2.5, 64.5, 3.5, 0f, 0f)))
 
-        deferred.chunkUnloaded(4, -2)
+        deferred.chunkUnloaded(world, 4, -2)
 
         assertNull(deferred.capture(chunk, emptyList()) { })
     }
@@ -231,7 +231,7 @@ class NexoFurnitureHandlerTest {
         val chair = FurnitureRecord("oak_chair", 1.5, 64.5, 3.5, 90f, 10f)
 
         deferred.restore(chunk, listOf(chair))
-        deferred.chunkUnloaded(4, -2)
+        deferred.chunkUnloaded(world, 4, -2)
         deferred.restore(chunk, listOf(chair))
         queued.forEach { it.run() }
 

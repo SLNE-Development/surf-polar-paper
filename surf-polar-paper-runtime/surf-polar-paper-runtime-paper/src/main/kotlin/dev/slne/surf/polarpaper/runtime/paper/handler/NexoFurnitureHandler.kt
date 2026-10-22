@@ -12,6 +12,7 @@ import org.bukkit.Bukkit
 import org.bukkit.Chunk
 import org.bukkit.Color
 import org.bukkit.Location
+import org.bukkit.World
 import org.bukkit.block.BlockFace
 import org.bukkit.entity.Entity
 import org.bukkit.entity.ItemDisplay
@@ -289,7 +290,7 @@ class NexoFurnitureHandler internal constructor(
         return (unplaced + records).ifEmpty { null }
     }
 
-    override fun chunkUnloaded(x: Int, z: Int) {
+    override fun chunkUnloaded(world: World, x: Int, z: Int) {
         pending.remove(key(x, z))
     }
 

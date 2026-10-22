@@ -1,6 +1,7 @@
 package dev.slne.surf.polarpaper.api.data
 
 import org.bukkit.Chunk
+import org.bukkit.World
 import org.bukkit.entity.Entity
 
 /**
@@ -23,10 +24,10 @@ interface ChunkDataHandler<T : Any> {
     fun restore(chunk: Chunk, value: T)
 
     /**
-     * Called when the chunk at [x], [z] unloaded. Polar leaves unloaded chunks out of later saves, so nothing captured
-     * from here on would be written; handlers that keep per-chunk state, such as records that are not restored yet,
-     * release it here. Runs on the thread that fires the ChunkUnloadEvent: the main thread on Paper, the chunk's
+     * Called when the chunk at [x], [z] of [world] unloaded. Polar leaves unloaded chunks out of later saves, so
+     * nothing captured from here on would be written; handlers that keep per-chunk state, such as records that are
+     * not restored yet, release it here. Runs on the thread that fires the ChunkUnloadEvent: the main thread on Paper, the chunk's
      * region thread on Folia. An exception is logged and does not stop the other handlers. Does nothing by default.
      */
-    fun chunkUnloaded(x: Int, z: Int) = Unit
+    fun chunkUnloaded(world: World, x: Int, z: Int) = Unit
 }

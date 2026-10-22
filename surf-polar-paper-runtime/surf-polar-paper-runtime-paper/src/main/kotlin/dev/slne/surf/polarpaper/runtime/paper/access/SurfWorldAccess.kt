@@ -10,6 +10,7 @@ import dev.slne.surf.polarpaper.runtime.paper.world.SurfChunkImpl
 import live.minehub.polarpaper.core.generator.PolarGenerator
 import live.minehub.polarpaper.core.util.MemorySegmentWriter
 import live.minehub.polarpaper.core.world.PolarWorldAccess
+import net.kyori.adventure.key.Key
 import net.minecraft.core.BlockPos
 import net.minecraft.world.level.block.entity.BlockEntity
 import net.minecraft.world.level.chunk.ChunkAccess
@@ -90,7 +91,27 @@ class SurfWorldAccess(
                 log.atSevere().withCause(e).log("Failed to capture the data of unloading chunk %s, %s of %s", x, z, world)
             }
         }
-        forget(x, z)
+        forget(chunk.world, x, z)
+    }
+
+    /**
+     * The section keys of every chunk that unloaded and was not loaded again since. They count as live data for the
+     * unhandled-section check, because a chunk that unloaded during the live stages is no longer in the live registry.
+     *
+     * @throws IllegalStateException when captured bytes cannot be decoded, so the check cannot vouch for them
+     */
+    fun unloadedSectionKeys(): Set<Key> {
+        val keys = HashSet<Key>()
+        for ((chunkKey, bytes) in unloaded) {
+            try {
+                SectionContainerCodec.decode(bytes).keys.mapTo(keys) { Key.key(it) }
+            } catch (e: Exception) {
+                val x = LiveChunkRegistry.chunkX(chunkKey)
+                val z = LiveChunkRegistry.chunkZ(chunkKey)
+                throw IllegalStateException("The captured data of unloaded chunk $x, $z of $world cannot be decoded", e)
+            }
+        }
+        return keys
     }
 
     /**
@@ -103,12 +124,12 @@ class SurfWorldAccess(
     }
 
     /** Forgets the state of a chunk that unloaded. */
-    fun forget(x: Int, z: Int) {
+    fun forget(bukkitWorld: org.bukkit.World, x: Int, z: Int) {
         undecodable -= LiveChunkRegistry.key(x, z)
         prepared.remove(LiveChunkRegistry.key(x, z))
         for (handler in handlers) {
             try {
-                handler.chunkUnloaded(x, z)
+                handler.chunkUnloaded(bukkitWorld, x, z)
             } catch (e: Exception) {
                 log.atWarning().withCause(e).log("Handler %s failed to release chunk %s, %s", handler.type.key, x, z)
             }
