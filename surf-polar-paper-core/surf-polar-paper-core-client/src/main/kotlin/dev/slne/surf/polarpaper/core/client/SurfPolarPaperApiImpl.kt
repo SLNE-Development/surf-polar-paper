@@ -35,11 +35,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.bukkit.plugin.Plugin
 import org.jetbrains.annotations.UnmodifiableView
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.time.Duration.Companion.seconds
 
 /**
  * The API instance of one plugin. Only worlds of the game modes in [settings] can be used through it.
@@ -72,6 +74,8 @@ class SurfPolarPaperApiImpl internal constructor(
                 } catch (exception: CancellationException) {
                     throw exception
                 } catch (exception: Exception) {
+                    // A save that was in flight when the API closed fails on the closed API, which is no news
+                    if (closed.get()) throw CancellationException("API of plugin ${plugin.name} closed", exception)
                     log.atSevere().withCause(exception).log("Autosave of plugin ${plugin.name} failed")
                 }
             }
@@ -79,7 +83,17 @@ class SurfPolarPaperApiImpl internal constructor(
     }
 
     override val loadedWorlds: @UnmodifiableView ObjectSet<SurfWorld>
-        get() = worldCache.asMap().values.toObjectSet()
+        get() {
+            requireOpen()
+            return loadedSnapshot()
+        }
+
+    private fun loadedSnapshot(): ObjectSet<SurfWorld> = worldCache.asMap().values.toObjectSet()
+
+    /** A closed instance has released its game modes, so using it any further would write worlds it no longer owns. */
+    private fun requireOpen() {
+        check(!closed.get()) { "The API of plugin '${plugin.name}' is closed" }
+    }
 
     private fun ensureStorageProvider() = storageProviderSupplier()
         ?: throw IllegalStateException("Storage provider is not initialized")
@@ -137,14 +151,16 @@ class SurfPolarPaperApiImpl internal constructor(
      * non-cancellable so a cancelled caller cannot leave the world locked; a failure here must not hide the
      * original exception.
      */
-    private suspend fun discardFailedLoad(world: SurfWorldImpl?, key: WorldCacheKey) {
+    private suspend fun discardFailedLoad(world: SurfWorldImpl?, key: WorldCacheKey, releaseLock: Boolean) {
         withContext(NonCancellable) {
             try {
                 if (world != null) platformBridge.unloadWorld(world)
             } catch (exception: Exception) {
                 log.atWarning().withCause(exception).log("Failed to unload platform world $world after a failed load")
             } finally {
-                releaseLock(key)
+                // A lock this server already held belongs to a world that is still loaded, e.g. one orphaned by
+                // an earlier instance, and must stay
+                if (releaseLock) releaseLock(key)
             }
         }
     }
@@ -157,6 +173,7 @@ class SurfPolarPaperApiImpl internal constructor(
         polarBytes: ByteArray?,
         worldVersion: Int?
     ): SurfWorld {
+        requireOpen()
         val gameMode = requireOwned(gameModeIdentifier)
         val key = WorldCacheKey(worldUuid, gameModeIdentifier)
 
@@ -169,15 +186,16 @@ class SurfPolarPaperApiImpl internal constructor(
             val templateVersion = worldVersion ?: gameMode.currentVersion
             val world = SurfWorldImpl(worldUuid, gameModeIdentifier, templateVersion, this, platformBridge)
 
+            val heldBefore = worldLocks.isHeld(key)
             worldLocks.lock(key)
             try {
                 val migrations = MigrationPlanner.plan(worldUuid, gameMode, templateVersion)
 
                 loadWorldPlatform(world, polarBytes, migrations)
                 world.version = gameMode.currentVersion
-                saveWorld(world)
+                saveLocked(world, shutdown = false)
             } catch (exception: Exception) {
-                discardFailedLoad(world, key)
+                discardFailedLoad(world, key, releaseLock = !heldBefore)
                 throw exception
             }
 
@@ -192,6 +210,7 @@ class SurfPolarPaperApiImpl internal constructor(
         worldUuid: UUID,
         gameModeIdentifier: String
     ): SurfWorld = withStorageProvider { storageProvider ->
+        requireOpen()
         val gameMode = requireOwned(gameModeIdentifier)
 
         val key = WorldCacheKey(worldUuid, gameModeIdentifier)
@@ -202,6 +221,7 @@ class SurfPolarPaperApiImpl internal constructor(
             worldCache.getIfPresent(key)?.let { return@withLock it }
 
             // Locked before reading, so no other server can change the world while it is loaded here
+            val heldBefore = worldLocks.isHeld(key)
             worldLocks.lock(key)
 
             var world: SurfWorldImpl? = null
@@ -219,7 +239,7 @@ class SurfPolarPaperApiImpl internal constructor(
 
                 // Persist the migrated state right away, so the migrations never have to run twice
                 if (stored.worldVersion != gameMode.currentVersion) {
-                    saveWorld(loading)
+                    saveLocked(loading, shutdown = false)
                 }
 
                 worldCache.put(key, loading)
@@ -227,19 +247,26 @@ class SurfPolarPaperApiImpl internal constructor(
 
                 loading
             } catch (exception: Exception) {
-                discardFailedLoad(world, key)
+                discardFailedLoad(world, key, releaseLock = !heldBefore)
                 throw exception
             }
         }
     }
 
-    override suspend fun saveWorld(world: SurfWorld) = saveWorld(world, shutdown = false)
+    override suspend fun saveWorld(world: SurfWorld) {
+        requireOpen()
+        val impl = implOf(world)
+        requireOwned(impl.gameModeIdentifier)
 
-    private suspend fun saveWorld(
-        world: SurfWorld,
+        // Serialized with unloads and deletes of the same world: a save that is in flight must not write after them
+        mutexFor(impl.key()).withLock { saveLocked(impl, shutdown = false) }
+    }
+
+    /** Saves [impl] and writes it to storage. The caller holds the mutex of the world, or is the shutdown. */
+    private suspend fun saveLocked(
+        impl: SurfWorldImpl,
         shutdown: Boolean
     ) = withStorageProvider { storageProvider ->
-        val impl = implOf(world)
         requireOwned(impl.gameModeIdentifier)
 
         // Without the lock another server may have loaded and changed the world, saving would overwrite that
@@ -255,6 +282,10 @@ class SurfPolarPaperApiImpl internal constructor(
             throw IllegalStateException("Failed to save platform world $impl", exception)
         }
 
+        // The save took a while, the lock may have been lost or released meanwhile
+        check(worldLocks.isHeld(impl.key())) {
+            "Not writing world $impl, this server no longer holds its lock"
+        }
         storageProvider.writeWorldBytes(
             impl.uuid,
             impl.gameModeIdentifier,
@@ -268,11 +299,17 @@ class SurfPolarPaperApiImpl internal constructor(
         world: SurfWorld,
         saveChanges: Boolean
     ) {
+        requireOpen()
         val impl = implOf(world)
+
+        mutexFor(impl.key()).withLock { unloadLocked(impl, saveChanges) }
+    }
+
+    private suspend fun unloadLocked(impl: SurfWorldImpl, saveChanges: Boolean) {
         val key = impl.key()
 
         if (saveChanges) {
-            saveWorld(impl)
+            saveLocked(impl, shutdown = false)
         }
 
         unloadWorldPlatform(impl)
@@ -285,24 +322,28 @@ class SurfPolarPaperApiImpl internal constructor(
     override suspend fun deleteWorld(
         world: SurfWorld
     ) = withStorageProvider { storageProvider ->
+        requireOpen()
         requireOwned(world.gameModeIdentifier)
 
-        // A world that is not loaded here is locked for the deletion, so it cannot be deleted while loaded elsewhere
         val key = world.key()
-        if (!worldLocks.isHeld(key)) {
-            worldLocks.lock(key)
-        }
+        mutexFor(key).withLock {
+            // A world that is not loaded here is locked for the deletion, so it cannot be deleted while loaded elsewhere
+            if (!worldLocks.isHeld(key)) {
+                worldLocks.lock(key)
+            }
 
-        try {
             val loaded = worldCache.getIfPresent(key)
             if (loaded != null) {
+                // A refused unload leaves the world loaded, so its lock stays held and nothing is deleted
                 unloadWorldPlatform(loaded)
                 worldCache.invalidate(key)
             }
 
-            storageProvider.deleteWorldBytes(world.uuid, world.gameModeIdentifier)
-        } finally {
-            releaseLock(key)
+            try {
+                storageProvider.deleteWorldBytes(world.uuid, world.gameModeIdentifier)
+            } finally {
+                releaseLock(key)
+            }
         }
 
         log.atInfo().log("Deleted world $world")
@@ -320,43 +361,88 @@ class SurfPolarPaperApiImpl internal constructor(
     }
 
     override suspend fun unloadAllWorlds(saveChanges: Boolean) {
+        requireOpen()
         forEachLoadedWorld("unload") { world ->
             unloadWorld(world, saveChanges)
         }
     }
 
     override suspend fun saveAllWorlds() {
+        requireOpen()
         forEachLoadedWorld("save") { world ->
             saveWorld(world)
         }
     }
 
+    /**
+     * Closes the instance while the server keeps running, e.g. when its plugin is disabled at runtime: saves every
+     * world, unloads it and releases its lock, and frees the game modes. A world that Bukkit refuses to unload (players
+     * inside, a default world) stays saved, locked and loaded in the platform, with a warning. For a server stop use
+     * [closeForShutdown].
+     */
     override suspend fun close() {
         if (!closed.compareAndSet(false, true)) return
 
         autosaveJob?.cancelAndJoin()
         try {
-            // Only save: Paper's world manager is already closed at shutdown and worlds with players cannot be
-            // unloaded then. Locks are released when the server disconnects.
-            saveAllWorlds()
+            forEachLoadedWorld("close") { world -> closeWorld(implOf(world)) }
         } finally {
             ApiInstances.unregister(this)
+        }
+    }
+
+    private suspend fun closeWorld(impl: SurfWorldImpl) {
+        val key = impl.key()
+
+        mutexFor(key).withLock {
+            // A world that cannot be saved stays loaded, unloading it would lose its changes
+            saveLocked(impl, shutdown = false)
+
+            try {
+                unloadWorldPlatform(impl)
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                log.atWarning().withCause(exception).log(
+                    "Could not unload world $impl while closing the API of plugin ${plugin.name}: it stays saved, loaded and locked"
+                )
+                return@withLock
+            }
+
+            worldCache.invalidate(key)
+            releaseLock(key)
         }
     }
 
     /**
      * [close] for the server shutdown, where the disabling thread is blocked: an autosave that is in flight may be
      * queued behind that thread and never finish, so it is cancelled without waiting for it, and the saves only wait
-     * a bounded time for each other.
+     * a bounded time for each other. Worlds are only saved and never unloaded: Paper's world manager is already
+     * closed at this point and worlds with players cannot be unloaded. Locks are released when the server
+     * disconnects.
      */
     suspend fun closeForShutdown() {
         if (!closed.compareAndSet(false, true)) return
 
         autosaveJob?.cancel()
         try {
-            forEachLoadedWorld("save") { world -> saveWorld(world, shutdown = true) }
+            forEachLoadedWorld("save") { world -> saveForShutdown(implOf(world)) }
         } finally {
             ApiInstances.unregister(this)
+        }
+    }
+
+    private suspend fun saveForShutdown(impl: SurfWorldImpl) {
+        val mutex = mutexFor(impl.key())
+        // Normally free, because the autosave was cancelled. Only a save that is stuck can make this wait, and the
+        // blocked thread must not wait for that forever.
+        val locked = mutex.tryLock() || (withTimeoutOrNull(SHUTDOWN_MUTEX_WAIT) { mutex.lock(); true } ?: false)
+        if (!locked) log.atWarning().log("Saving world $impl without waiting any longer for a save that is still running")
+
+        try {
+            saveLocked(impl, shutdown = true)
+        } finally {
+            if (locked) mutex.unlock()
         }
     }
 
@@ -365,7 +451,7 @@ class SurfPolarPaperApiImpl internal constructor(
      * the others, e.g. during shutdown. All failures are thrown together afterwards.
      */
     private suspend inline fun forEachLoadedWorld(actionName: String, action: (SurfWorld) -> Unit) {
-        val worlds = loadedWorlds.toObjectSet()
+        val worlds = loadedSnapshot()
         val failures = mutableListOf<Exception>()
 
         for (world in worlds) {
@@ -386,13 +472,16 @@ class SurfPolarPaperApiImpl internal constructor(
         }
     }
 
-    override fun findWorld(worldUuid: UUID, gameModeIdentifier: String): SurfWorld? =
-        worldCache.getIfPresent(WorldCacheKey(worldUuid, gameModeIdentifier))
+    override fun findWorld(worldUuid: UUID, gameModeIdentifier: String): SurfWorld? {
+        requireOpen()
+        return worldCache.getIfPresent(WorldCacheKey(worldUuid, gameModeIdentifier))
+    }
 
     override suspend fun listWorlds(
         gameModeIdentifier: String,
         showLoadedOnly: Boolean
     ): List<WorldInfo> {
+        requireOpen()
         requireOwned(gameModeIdentifier)
 
         return if (showLoadedOnly) {
@@ -404,5 +493,10 @@ class SurfPolarPaperApiImpl internal constructor(
                 storageProvider.listWorlds(gameModeIdentifier)
             }
         }
+    }
+
+    private companion object {
+        /** How long a shutdown save waits for a save of the same world that is still running. */
+        val SHUTDOWN_MUTEX_WAIT = 10.seconds
     }
 }

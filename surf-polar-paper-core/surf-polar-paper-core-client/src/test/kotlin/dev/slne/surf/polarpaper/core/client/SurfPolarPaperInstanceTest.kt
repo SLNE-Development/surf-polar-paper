@@ -102,7 +102,9 @@ class SurfPolarPaperInstanceTest {
 
         instance.onDisable()
 
-        coVerify(exactly = 1) { api.close() }
+        // The server may be stopping, so the worlds are only saved and never unloaded
+        coVerify(exactly = 1) { api.closeForShutdown() }
+        coVerify(exactly = 0) { api.close() }
         assertNull(instance.storageProvider)
     }
 
@@ -110,7 +112,7 @@ class SurfPolarPaperInstanceTest {
     fun `onDisable disconnects even when closing fails`() = runTest {
         val instance = TestInstance()
         instance.connect()
-        coEvery { api.close() } throws IllegalStateException("Failed to save 1 of 2 worlds")
+        coEvery { api.closeForShutdown() } throws IllegalStateException("Failed to save 1 of 2 worlds")
 
         assertThrows<IllegalStateException> { instance.onDisable() }
 

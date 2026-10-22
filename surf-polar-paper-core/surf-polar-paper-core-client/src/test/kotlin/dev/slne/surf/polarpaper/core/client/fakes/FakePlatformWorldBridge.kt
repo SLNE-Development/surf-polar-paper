@@ -32,8 +32,12 @@ class FakePlatformWorldBridge : PlatformWorldBridge {
         platformWorlds[world] = polarBytes ?: ByteArray(0)
     }
 
+    /** Held by the next save only, so tests can keep a save in flight. */
+    var saveGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
     override suspend fun saveWorld(world: SurfWorldImpl): ByteArray {
         calls += "save:${world.name}"
+        saveGate?.also { saveGate = null }?.await()
         val platformBytes = platformWorlds[world] ?: error("World $world is not loaded")
 
         return savedBytes?.invoke(world) ?: platformBytes

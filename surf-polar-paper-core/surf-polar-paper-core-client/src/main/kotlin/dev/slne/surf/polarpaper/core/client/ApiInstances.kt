@@ -28,7 +28,8 @@ object ApiInstances {
         create: () -> SurfPolarPaperApiImpl
     ): SurfPolarPaperApiImpl {
         settings.gameModes.keys.forEach { id ->
-            if (ownerOf(id) != null) throw GameModeAlreadyOwnedException(id, plugin.name)
+            val owner = ownerOf(id)
+            if (owner != null) throw GameModeAlreadyOwnedException(id, owner.plugin.name)
         }
 
         try {
@@ -38,7 +39,15 @@ object ApiInstances {
             throw exception
         }
 
-        return create().also { instances += it }
+        // The claims must not outlive an instance that was never registered
+        val api = try {
+            create()
+        } catch (exception: Exception) {
+            restoreClaims(plugin.name)
+            throw exception
+        }
+
+        return api.also { instances += it }
     }
 
     @Synchronized

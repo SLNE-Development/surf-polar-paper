@@ -220,13 +220,14 @@ class SurfPolarPaperApiImplTest {
     }
 
     @Test
-    fun `close saves own worlds without unloading them and frees the game modes`() = runTest {
+    fun `close saves own worlds, unloads them, releases their locks and frees the game modes`() = runTest {
         val factory = SurfPolarPaperApiFactoryImpl()
         val created = factory.create(plugin, settings()) as SurfPolarPaperApiImpl
-        val closing = SurfPolarPaperApiImpl(plugin, settings(), { storage }, { bridge })
+        val locks = FakeLocks()
+        val closing = SurfPolarPaperApiImpl(plugin, settings(), { storage }, { bridge }, { locks })
         val uuid = UUID.randomUUID()
         store(uuid, "survival", byteArrayOf(1))
-        closing.loadWorld(uuid, "survival")
+        val world = closing.loadWorld(uuid, "survival")
         bridge.savedBytes = { byteArrayOf(7) }
 
         closing.close()
@@ -234,9 +235,212 @@ class SurfPolarPaperApiImplTest {
         created.close()
 
         assertArrayEquals(byteArrayOf(7), storedWorldBytes(uuid, "survival"))
-        assertEquals(0, bridge.count("unload:"))
+        assertEquals(listOf("save:$uuid", "unload:$uuid"), bridge.calls.drop(1))
+        assertTrue(world !in bridge.platformWorlds)
+        assertTrue(locks.held.isEmpty())
         assertNull(ApiInstances.ownership.ownerOf("survival"))
         assertTrue(ApiInstances.all.isEmpty())
+    }
+
+    @Test
+    fun `close keeps a world that bukkit refuses to unload saved, locked and loaded and still frees the game modes`() = runTest {
+        val locks = FakeLocks()
+        val closing = SurfPolarPaperApiImpl(plugin, settings(), { storage }, { bridge }, { locks })
+        ApiInstances.register(closing)
+        val refused = UUID.randomUUID()
+        val other = UUID.randomUUID()
+        store(refused, "survival", byteArrayOf(1))
+        store(other, "survival", byteArrayOf(1))
+        val refusedWorld = closing.loadWorld(refused, "survival") as SurfWorldImpl
+        closing.loadWorld(other, "survival")
+        bridge.failingUnloads += refusedWorld
+        bridge.savedBytes = { byteArrayOf(7) }
+
+        closing.close()
+
+        // Saved before the unload was tried, and the other world was not held back
+        assertArrayEquals(byteArrayOf(7), storedWorldBytes(refused, "survival"))
+        assertEquals(setOf(WorldCacheKey(refused, "survival")), locks.held)
+        assertTrue(refusedWorld in bridge.platformWorlds)
+        assertEquals(1, bridge.platformWorlds.size)
+        assertTrue(ApiInstances.all.isEmpty())
+    }
+
+    @Test
+    fun `close does not unload a world it could not save`() = runTest {
+        val locks = FakeLocks()
+        val closing = SurfPolarPaperApiImpl(plugin, settings(), { storage }, { bridge }, { locks })
+        val uuid = UUID.randomUUID()
+        store(uuid, "survival", byteArrayOf(1))
+        closing.loadWorld(uuid, "survival")
+        bridge.savedBytes = { error("cannot save") }
+
+        assertThrows<IllegalStateException> { closing.close() }
+
+        assertEquals(0, bridge.count("unload:"))
+        assertEquals(1, locks.held.size)
+    }
+
+    @Test
+    fun `closeForShutdown only saves and never unloads`() = runTest {
+        val locks = FakeLocks()
+        val closing = SurfPolarPaperApiImpl(plugin, settings(), { storage }, { bridge }, { locks })
+        val uuid = UUID.randomUUID()
+        store(uuid, "survival", byteArrayOf(1))
+        closing.loadWorld(uuid, "survival")
+        bridge.savedBytes = { byteArrayOf(7) }
+
+        closing.closeForShutdown()
+
+        assertArrayEquals(byteArrayOf(7), storedWorldBytes(uuid, "survival"))
+        assertEquals(0, bridge.count("unload:"))
+        assertEquals(1, locks.held.size)
+        assertNull(ApiInstances.ownership.ownerOf("survival"))
+    }
+
+    @Test
+    fun `closeForShutdown saves even when a save of the same world never finishes`() = runTest {
+        val closing = SurfPolarPaperApiImpl(plugin, settings(), { storage }, { bridge })
+        val uuid = UUID.randomUUID()
+        store(uuid, "survival", byteArrayOf(1))
+        val world = closing.loadWorld(uuid, "survival")
+        bridge.savedBytes = { byteArrayOf(7) }
+        // An autosave that holds the world and never gets to finish
+        bridge.saveGate = CompletableDeferred()
+        val stuck = async { closing.saveWorld(world) }
+        runCurrent()
+
+        closing.closeForShutdown()
+
+        assertArrayEquals(byteArrayOf(7), storedWorldBytes(uuid, "survival"))
+        assertEquals(2, bridge.count("save:"))
+        stuck.cancel()
+    }
+
+    @Test
+    fun `a closed instance rejects every further call`() = runTest {
+        val uuid = UUID.randomUUID()
+        store(uuid, "survival", byteArrayOf(1))
+        val world = api.loadWorld(uuid, "survival")
+        api.close()
+
+        val calls = listOf<suspend () -> Unit>(
+            { api.createWorld(UUID.randomUUID(), "survival") },
+            { api.loadWorld(uuid, "survival") },
+            { api.saveWorld(world) },
+            { api.unloadWorld(world, saveChanges = true) },
+            { api.deleteWorld(world) },
+            { api.unloadAllWorlds(saveChanges = true) },
+            { api.saveAllWorlds() },
+            { api.findWorld(uuid, "survival") },
+            { api.listWorlds("survival", showLoadedOnly = true) },
+            { api.loadedWorlds }
+        )
+        for (call in calls) {
+            val exception = assertThrows<IllegalStateException> { call() }
+            assertTrue(exception.message!!.contains("closed"), exception.message)
+        }
+    }
+
+    @Test
+    fun `a save that is in flight finishes before an unload of the same world starts`() = runTest {
+        val uuid = UUID.randomUUID()
+        store(uuid, "survival", byteArrayOf(1))
+        val world = api.loadWorld(uuid, "survival")
+        bridge.savedBytes = { byteArrayOf(7) }
+        bridge.saveGate = CompletableDeferred()
+        val gate = bridge.saveGate!!
+
+        val saving = async { api.saveWorld(world) }
+        runCurrent()
+        val unloading = async { api.unloadWorld(world, saveChanges = false) }
+        runCurrent()
+
+        assertEquals(0, bridge.count("unload:"))
+
+        gate.complete(Unit)
+        saving.await()
+        unloading.await()
+
+        assertEquals(listOf("save:$uuid", "unload:$uuid"), bridge.calls.drop(1))
+        assertArrayEquals(byteArrayOf(7), storedWorldBytes(uuid, "survival"))
+    }
+
+    @Test
+    fun `a save does not write when the lock was lost while it ran`() = runTest {
+        val locks = FakeLocks()
+        val api = SurfPolarPaperApiImpl(plugin, settings(), { storage }, { bridge }, { locks })
+        val uuid = UUID.randomUUID()
+        store(uuid, "survival", byteArrayOf(1))
+        val world = api.loadWorld(uuid, "survival")
+        val before = storage.stored.getValue(WorldCacheKey(uuid, "survival")).copyOf()
+        bridge.saveGate = CompletableDeferred()
+        val gate = bridge.saveGate!!
+
+        val saving = async { runCatching { api.saveWorld(world) } }
+        runCurrent()
+        locks.held.clear()
+        gate.complete(Unit)
+
+        assertTrue(saving.await().exceptionOrNull() is IllegalStateException)
+        assertEquals(0, storage.writes)
+        assertArrayEquals(before, storage.stored.getValue(WorldCacheKey(uuid, "survival")))
+    }
+
+    @Test
+    fun `deleteWorld keeps the lock and the stored world when bukkit refuses the unload`() = runTest {
+        val locks = FakeLocks()
+        val api = SurfPolarPaperApiImpl(plugin, settings(), { storage }, { bridge }, { locks })
+        val uuid = UUID.randomUUID()
+        store(uuid, "survival", byteArrayOf(1))
+        val world = api.loadWorld(uuid, "survival") as SurfWorldImpl
+        bridge.failingUnloads += world
+
+        assertThrows<IllegalStateException> { api.deleteWorld(world) }
+
+        assertEquals(setOf(WorldCacheKey(uuid, "survival")), locks.held)
+        assertTrue(WorldCacheKey(uuid, "survival") in storage.stored)
+        assertSame(world, api.findWorld(uuid, "survival"))
+    }
+
+    @Test
+    fun `a failing load of a world whose lock this server already held keeps that lock`() = runTest {
+        val locks = FakeLocks()
+        val api = SurfPolarPaperApiImpl(plugin, settings(), { storage }, { bridge }, { locks })
+        val uuid = UUID.randomUUID()
+        // Held by a world that an earlier instance left loaded
+        locks.held += WorldCacheKey(uuid, "survival")
+        bridge.failOnLoad = IllegalStateException("already loaded")
+
+        assertThrows<IllegalStateException> { api.createWorld(uuid, "survival") }
+
+        assertEquals(setOf(WorldCacheKey(uuid, "survival")), locks.held)
+    }
+
+    @Test
+    fun `the exception for an owned game mode names the real owner`() {
+        val factory = SurfPolarPaperApiFactoryImpl()
+        val other = mockk<Plugin> { every { name } returns "OtherPlugin" }
+        factory.create(plugin, settings())
+
+        val exception = assertThrows<GameModeAlreadyOwnedException> { factory.create(other, settings()) }
+
+        assertEquals("TestPlugin", exception.owner)
+    }
+
+    @Test
+    fun `claims are restored when creating the instance fails`() {
+        val factory = SurfPolarPaperApiFactoryImpl()
+        factory.create(plugin, polarPaperSettings { gameMode("lobby") { version = 1 } })
+
+        assertThrows<IllegalStateException> {
+            ApiInstances.claimAndRegister(plugin, settings()) { throw IllegalStateException("cannot create") }
+        }
+
+        assertNull(ApiInstances.ownership.ownerOf("survival"))
+        // What the plugin's registered instance declares stays claimed
+        assertEquals("TestPlugin", ApiInstances.ownership.ownerOf("lobby"))
+        assertEquals(1, ApiInstances.all.size)
     }
 
     @Test

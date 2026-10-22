@@ -54,7 +54,11 @@ api.unloadWorld(world)
 ```
 
 Loading or creating a world that is loaded on another server throws a `WorldLockedException` naming that server.
-When the plugin is disabled, its instances are closed: they save their worlds and free their game modes.
+When a plugin is disabled while the server keeps running, its instances are closed: they save and unload their
+worlds, release the world locks and free their game modes. A world that Bukkit refuses to unload (players inside, a
+default world) stays saved, loaded and locked, and loading it again from a new instance throws an
+`IllegalStateException`. When the server stops, worlds are only saved and never unloaded, because Paper has already
+closed its world manager. A closed instance rejects every further call with an `IllegalStateException`.
 
 ### Data sections and handlers
 
@@ -85,8 +89,9 @@ object MultiblockHandler : ChunkDataHandler<List<Multiblock>> {
 }
 ```
 
-Entities passed to `claim` are not saved by the entities handler, so furniture is never stored twice. Chunk hooks
-(`onChunkLoad`, `onChunkSave` in the settings) run for every chunk.
+Entities passed to `claim` are not saved by the entities handler, so furniture is never stored twice. A handler that
+keeps per-chunk state can release it in `chunkUnloaded(world, x, z)`, which is called when a chunk of `world` unloads.
+Chunk hooks (`onChunkLoad`, `onChunkSave` in the settings) run for every chunk.
 
 Built-in handlers, enabled in the `handlers { }` block:
 

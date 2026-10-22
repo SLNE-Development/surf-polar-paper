@@ -20,14 +20,16 @@ import kotlin.time.Duration.Companion.seconds
 
 /**
  * Closes the API instances of a plugin that gets disabled, so its worlds are saved and its game modes are freed.
- * Closing only saves, the worlds stay loaded.
  *
  * While the server stops, the instances are closed right inside the event, on the disabling thread and without
  * dispatching anywhere: the main thread no longer ticks then, so nothing that needs a dispatcher could ever run. On
- * Paper that thread owns every region, so chunks are prepared inline. On Folia this is best effort.
+ * Paper that thread owns every region, so chunks are prepared inline. On Folia this is best effort. The worlds are only
+ * saved and stay loaded, because Paper's world manager is already closed then.
  *
  * When a plugin is disabled at runtime, closing runs in [scope] instead, because saving needs the region threads
- * that a blocked disabling thread would starve. [awaitPending] lets the shutdown of this plugin wait for those closes.
+ * that a blocked disabling thread would starve. It saves and unloads the worlds and releases their locks, so a plugin
+ * that is enabled again starts clean; a world that Bukkit refuses to unload stays loaded, saved and locked.
+ * [awaitPending] lets the shutdown of this plugin wait for those closes.
  */
 class PluginDisableCloser(
     private val scope: CoroutineScope,

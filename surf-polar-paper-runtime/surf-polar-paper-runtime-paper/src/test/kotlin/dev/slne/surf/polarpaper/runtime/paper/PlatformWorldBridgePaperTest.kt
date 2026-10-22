@@ -455,6 +455,36 @@ class PlatformWorldBridgePaperTest {
     }
 
     @Test
+    fun `loading a world that another instance left loaded is rejected and leaves that world alone`() = runTest {
+        val orphan = world(settings())
+        bridge.loadWorld(orphan, null, emptyList())
+        val api = mockk<SurfPolarPaperApiImpl>(relaxed = true) {
+            every { settings } returns settings()
+            every { plugin } returns mockk<Plugin>(relaxed = true)
+        }
+        val recreated = SurfWorldImpl(orphan.uuid, orphan.gameModeIdentifier, 1, api, bridge)
+
+        val exception = assertThrows<IllegalStateException> { bridge.loadWorld(recreated, null, emptyList()) }
+        // What the api does when a load fails
+        bridge.unloadWorld(recreated)
+
+        assertTrue(exception.message!!.contains("already loaded"), exception.message)
+        assertEquals(1, platform.created)
+        assertTrue(platform.unloaded.isEmpty())
+        assertSame(platform.bukkit, bridge.bukkitWorld(orphan))
+    }
+
+    @Test
+    fun `loading the same world again does nothing`() = runTest {
+        val world = world(settings())
+        bridge.loadWorld(world, null, emptyList())
+
+        bridge.loadWorld(world, null, emptyList())
+
+        assertEquals(1, platform.created)
+    }
+
+    @Test
     fun `unloadWorld does nothing for a world that is not loaded`() = runTest {
         bridge.unloadWorld(world(settings()))
 

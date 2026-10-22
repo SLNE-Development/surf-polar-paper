@@ -60,8 +60,8 @@ abstract class SurfPolarPaperInstance {
     @OverridingMethodsMustInvokeSuper
     open suspend fun onDisable() {
         try {
-            // close() only saves: the server discards its worlds when it stops, and worlds with players in them
-            // cannot be unloaded at this point. The locks are released by disconnect().
+            // Only saves: the server discards its worlds when it stops, and worlds with players in them cannot be
+            // unloaded at this point. The locks are released by disconnect().
             closeAllApis()
         } finally {
             disconnect()
@@ -69,7 +69,7 @@ abstract class SurfPolarPaperInstance {
     }
 
     /**
-     * Closes every API instance and keeps going when one fails, so a single broken plugin cannot keep the
+     * Saves and closes every API instance (see [SurfPolarPaperApiImpl.closeForShutdown]) and keeps going when one fails, so a single broken plugin cannot keep the
      * others from saving. All failures are thrown together afterwards.
      */
     private suspend fun closeAllApis() {
@@ -78,7 +78,7 @@ abstract class SurfPolarPaperInstance {
 
         for (api in instances) {
             try {
-                api.close()
+                api.closeForShutdown()
             } catch (exception: CancellationException) {
                 throw exception
             } catch (exception: Exception) {

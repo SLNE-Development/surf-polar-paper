@@ -44,7 +44,14 @@ class PlatformWorldBridgePaper(
     private val loaded = ConcurrentHashMap<SurfWorldImpl, LoadedWorld>()
 
     override suspend fun loadWorld(world: SurfWorldImpl, polarBytes: ByteArray?, migrations: List<WorldMigration>) {
-        if (loaded.containsKey(world)) return
+        // Worlds are equal by uuid and game mode. An equal but different world is one that an earlier instance left
+        // loaded (e.g. Bukkit refused to unload it when that instance closed), and reusing it would hand out a world
+        // that no instance owns.
+        val existing = loaded.keys.firstOrNull { it == world }
+        if (existing === world) return
+        check(existing == null) {
+            "World $world is already loaded by another instance, e.g. one that was closed while Bukkit refused to unload it"
+        }
 
         var created: LoadedWorld? = null
         try {
@@ -116,6 +123,10 @@ class PlatformWorldBridgePaper(
     }
 
     override suspend fun unloadWorld(world: SurfWorldImpl) {
+        // A world that only equals the loaded one does not own it, e.g. the failed load of a second instance
+        val registered = loaded.keys.firstOrNull { it == world }
+        if (registered != null && registered !== world) return
+
         val bukkit = loaded[world]?.bukkit ?: platform.findWorld(world.name) ?: return
 
         check(platform.unloadWorld(bukkit)) {
