@@ -17,5 +17,6 @@ fun allScenarios(plugin: IntegrationTestPlugin): List<Scenario> = listOf(
     GeneratedChunkSurvivesUnload(plugin),
     CraftEngineRoundTrip(),
     NexoRoundTrip(plugin),
-    NexoToCraftEngineToNexo()
+    NexoToCraftEngineToNexo(),
+    InSessionUnloadReload(plugin)
 )

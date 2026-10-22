@@ -52,8 +52,11 @@ class ScenarioContext(val plugin: IntegrationTestPlugin) {
     suspend fun <T> onMain(block: () -> T): T =
         if (Bukkit.isPrimaryThread()) block() else withContext(plugin.globalRegionDispatcher) { block() }
 
-    /** Waits [ticks] server ticks. */
-    suspend fun ticks(ticks: Int) = delay(ticks * 50L)
+    /** Waits [ticks] server ticks, however long the server takes for them. */
+    suspend fun ticks(ticks: Int) {
+        val target = Bukkit.getCurrentTick() + ticks
+        while (Bukkit.getCurrentTick() < target) delay(5)
+    }
 
     /** Polls [condition] on the main thread every tick until it holds, and fails with [what] after [timeoutTicks]. */
     suspend fun awaitTrue(what: String, timeoutTicks: Int = 100, condition: () -> Boolean) {

@@ -26,9 +26,13 @@ class ResultWriter(private val file: Path) {
         Files.move(temporary, file, StandardCopyOption.REPLACE_EXISTING)
     }
 
-    /** Adds [result] to a file written by [write] earlier and marks the run as finished. */
+    /** Adds [result] to the scenario list of a file written by [write] earlier. The finished flag stays as it was. */
     fun append(result: ScenarioResult) {
         val text = Files.readString(file)
+        if (text.contains("\"scenarios\": []")) {
+            Files.writeString(file, text.replace("\"scenarios\": []", "\"scenarios\": [\n    ${encode(result)}\n  ]"))
+            return
+        }
         val end = text.lastIndexOf("\n  ]")
         require(end >= 0) { "$file has no scenario list to append to" }
         Files.writeString(file, text.substring(0, end) + ",\n    " + encode(result) + text.substring(end))

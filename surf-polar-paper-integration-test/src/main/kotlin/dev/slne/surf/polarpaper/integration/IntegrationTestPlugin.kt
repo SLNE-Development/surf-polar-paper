@@ -22,6 +22,7 @@ import kotlin.time.TimeSource
  */
 class IntegrationTestPlugin : SuspendingJavaPlugin(), Listener {
     private val results = mutableListOf<ScenarioResult>()
+    private var verifying = false
     private val writer by lazy { ResultWriter(dataPath.resolve(RESULTS_FILE)) }
 
     override suspend fun onEnableAsync() {
@@ -35,11 +36,13 @@ class IntegrationTestPlugin : SuspendingJavaPlugin(), Listener {
         launch {
             try {
                 val shutdown = ShutdownSavesLoadedWorld(this@IntegrationTestPlugin)
-                if (shutdown.hasPendingVerification()) verifyShutdown(shutdown) else runAll(shutdown)
+                verifying = shutdown.hasPendingVerification()
+                if (verifying) verifyShutdown(shutdown) else runAll(shutdown)
             } catch (throwable: Throwable) {
-                logger.severe("The scenario run broke: $throwable")
-                // The run did not finish, so the Gradle task fails on the flag
-                writer.write(results, finished = false)
+                logger.severe("The run broke: $throwable")
+                // The first run did not finish, so the Gradle task fails on the flag. The verifying run must not
+                // overwrite the results of the first one.
+                if (results.isNotEmpty() || !verifying) writer.write(results, finished = false)
             } finally {
                 Bukkit.getGlobalRegionScheduler().run(this@IntegrationTestPlugin) { Bukkit.shutdown() }
             }

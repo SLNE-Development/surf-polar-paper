@@ -72,6 +72,7 @@ class GeneratedChunkSurvivesUnload(plugin: dev.slne.surf.polarpaper.integration.
                 it.persistentDataContainer.get(markerKey, PersistentDataType.STRING) == "generated-stand"
             }
             if (stands.isEmpty()) missing += "the armor stand"
+            if (stands.size > 1) missing += "a single armor stand (found ${stands.size})"
         }
         if (reloaded.chunk(chunkX, chunkZ)?.data?.get(sectionType) != "generated section") missing += "the section"
 
