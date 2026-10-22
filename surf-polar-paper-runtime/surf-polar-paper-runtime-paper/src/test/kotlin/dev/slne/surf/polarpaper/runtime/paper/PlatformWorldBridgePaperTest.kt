@@ -531,7 +531,7 @@ class PlatformWorldBridgePaperTest {
 
         bridge.chunkUnloaded(platform.bukkit, chunk)
 
-        assertNull(platform.access!!.let { bridge.chunk(world, 0, 0) }?.data?.get(textType))
+        assertNull(bridge.chunk(world, 0, 0)?.data?.get(textType))
         // The Polar world still holds the stale "chair", and hands it to the chunk that loads again
         platform.loadChunk(platform.bukkit, 0, 0)
         assertEquals("armchair", bridge.chunk(world, 0, 0)?.data?.get(textType))

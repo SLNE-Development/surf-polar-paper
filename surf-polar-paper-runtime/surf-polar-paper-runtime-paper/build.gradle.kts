@@ -57,7 +57,7 @@ dependencies {
     compileOnlyApi("live.minehub:polarpaper:2.3.1")
 
     // Only touched through SurfCoreServerName, so the plugin works without surf-core-paper installed
-    compileOnly("dev.slne.surf.core:surf-core-api-paper:+")
+    compileOnly("dev.slne.surf.core:surf-core-api-paper:2.5.6")
 
     compileOnly("com.nexomc:nexo:1.29.1")
     compileOnly("net.momirealms:craft-engine-core:26.9.1")

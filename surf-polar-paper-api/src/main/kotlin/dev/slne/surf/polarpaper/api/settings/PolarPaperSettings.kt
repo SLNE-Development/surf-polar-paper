@@ -112,6 +112,11 @@ class PolarPaperSettingsBuilder internal constructor() {
         loadHooks += hook
     }
 
+    /**
+     * Registers a hook that runs before the data of a chunk is captured for a save. It also runs when a chunk unloads
+     * while its world stays loaded, and then the chunk's entities are already gone from the chunk: use the data
+     * sections for state that has to survive, not [SurfChunk.bukkitChunk]'s entities.
+     */
     fun onChunkSave(hook: (SurfChunk) -> Unit) {
         saveHooks += hook
     }

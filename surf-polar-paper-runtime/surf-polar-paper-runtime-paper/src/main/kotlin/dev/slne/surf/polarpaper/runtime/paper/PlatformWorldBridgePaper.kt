@@ -92,6 +92,7 @@ class PlatformWorldBridgePaper(
     /** Marks [bukkit] as unloading: the chunk events that follow belong to the world going away, not to gameplay. */
     fun worldUnloading(bukkit: World) {
         unloadingWorlds += bukkit
+        loaded.values.firstOrNull { it.bukkit == bukkit }?.access?.worldClosing()
     }
 
     private fun entryOf(bukkit: World): LoadedWorld? {

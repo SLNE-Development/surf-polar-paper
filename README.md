@@ -170,8 +170,8 @@ world stays as it was. After the migrations the world is saved at the new versio
 ### Known limitations
 
 - Polar drops chunks that only contain air when it saves, including their data sections. Data in an all-air chunk is lost.
-- Polar only writes chunks that are loaded when the save runs. A chunk that is not loaded then is left out of the save
-  and logged. Chunks that Polar loaded stay loaded, so this only concerns chunks that were unloaded by other means.
+- Polar writes the blocks of chunks that unloaded before a save, but knows nothing of their entities and data sections.
+  Those are captured while the chunk unloads (see below) and written by the saves that follow.
 - World user data that is not written by this plugin (Polar's own schematic offset) is dropped on the first save.
 - Chunks that become live after the world loaded (generated ones) are registered when first seen and run no load hook.
 - A chunk save hook must not start a save of the same world: the save lock of a world is not reentrant.

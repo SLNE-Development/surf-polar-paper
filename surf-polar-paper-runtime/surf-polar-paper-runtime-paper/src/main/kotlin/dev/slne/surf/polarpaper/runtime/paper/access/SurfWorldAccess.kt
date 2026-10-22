@@ -93,6 +93,15 @@ class SurfWorldAccess(
         forget(x, z)
     }
 
+    /**
+     * Forgets what is only needed while chunks unload, because the world is going away. The bytes in [unloaded] are
+     * not pruned after a save: Polar does not keep them (the real-server scenario generated-chunk-survives-unload
+     * fails when the second save finds them gone), so they live until the chunk loads again or the world is unloaded.
+     */
+    fun worldClosing() {
+        unloadingEntities.clear()
+    }
+
     /** Forgets the state of a chunk that unloaded. */
     fun forget(x: Int, z: Int) {
         undecodable -= LiveChunkRegistry.key(x, z)
