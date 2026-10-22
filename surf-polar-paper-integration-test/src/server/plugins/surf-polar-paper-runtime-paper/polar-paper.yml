@@ -1,0 +1,6 @@
+storage:
+  storage-type: DISK
+  disk:
+    path: worlds
+locking:
+  enabled: false

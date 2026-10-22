@@ -1,0 +1,21 @@
+# Polar would autosave and save on stop by itself with these defaults. The plugin switches both off for the worlds
+# it creates; the scenario pipeline-real-polar-calls proves that.
+default:
+  autosaveIntervalTicks: 100
+  announceAutosave: true
+  time: 1000
+  saveOnStop: true
+  loadOnStartup: true
+  spawn: 0.0, 64.0, 0.0, 0.0, 0.0
+  difficulty: NORMAL
+  async: false
+  saveLight: true
+  compression: ZSTD
+  compressionLevel: 7
+  worldType: FLAT
+  environment: NORMAL
+  gamerules:
+    - spawn_mobs: false
+    - random_tick_speed: 0
+    - mob_griefing: false
+worlds:

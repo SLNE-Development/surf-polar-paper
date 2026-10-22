@@ -175,8 +175,9 @@ world stays as it was. After the migrations the world is saved at the new versio
 - World user data that is not written by this plugin (Polar's own schematic offset) is dropped on the first save.
 - Chunks that become live after the world loaded (generated ones) are registered when first seen and run no load hook.
 - A chunk save hook must not start a save of the same world: the save lock of a world is not reentrant.
-- When a chunk unloads, its sections are dropped from memory and a warning is logged, because Polar leaves unloaded
-  chunks out of its saves.
+- When a chunk unloads while its world stays loaded, its entities and sections are captured at that moment and written
+  by every later save, so they survive an unload between two saves. Chunks that unload together with their world, or
+  because the server stops, are not captured: the world is saved before.
 - Plugins that own game modes must `depend` or `softdepend` on Nexo and CraftEngine when they use the furniture
   handlers, so they are disabled before those plugins: on shutdown the worlds are saved while the owning plugin is
   disabled, and the furniture entities must still exist then. On Folia the shutdown save is best effort.
@@ -190,10 +191,22 @@ Download `surf-polar-paper-runtime-paper-<version>-all.jar` from the
 
 - [polarpaper](https://github.com/MinehubMC/polarpaper)
 - surf-api-paper-server
-- [surf-core-paper](https://github.com/SLNE-Development/surf-core/releases), world locks are held under its server name
+- [surf-core-paper](https://github.com/SLNE-Development/surf-core/releases), optional: world locks are held under its
+  server name (see below for the fallback without it)
 - [CommandAPI](https://commandapi.jorel.dev)
 - [surf-rabbitmq-paper](https://github.com/SLNE-Development/surf-rabbitmq/releases), needed for database storage and
   world locking
+
+### Server name
+
+The server name that world locks are held under is resolved in this order:
+
+1. `SurfCoreApi.getCurrentServerName()`, when the surf-core-paper plugin is installed (the plugin is a soft dependency
+   and none of its classes are loaded without it)
+2. the environment variable `SURF_POLAR_PAPER_SERVER_NAME`
+3. the system property `surf.polarpaper.server-name`
+
+The plugin refuses to enable when none of them gives a name.
 
 ### Configuration
 
@@ -269,6 +282,28 @@ Requires Java 25. The microservice tests start PostgreSQL and Valkey with Testco
 ```shell
 ./gradlew build
 ```
+
+### Integration tests
+
+`integrationTest` starts a real Paper 26.3 server and runs the scenarios of the module
+`surf-polar-paper-integration-test`, a Paper plugin that only uses the public API. It is not part of `check` or `build`.
+
+```shell
+./gradlew :surf-polar-paper-integration-test:integrationTest
+```
+
+The task builds the plugin jars, lays out `surf-polar-paper-integration-test/build/integration-server` (disk storage,
+world locking off, `SURF_POLAR_PAPER_SERVER_NAME=integration-test`, no surf-core-paper), downloads the pinned releases
+of polarpaper, CommandAPI, LuckPerms, packetevents and CraftEngine and the surf-api-paper-server jar, and starts the
+server without a console. The scenarios run after startup and write `results.json` in
+`plugins/surf-polar-paper-integration-test/`. The server then stops with a modified world still loaded, and a second
+start checks that this shutdown saved it. The task fails when a scenario failed or the server did not finish within 10
+minutes (`-PserverTimeoutMinutes=<n>` changes that). Scenario results are `PASS`, `FAIL` or `SKIPPED`.
+
+The Nexo scenarios need the premium Nexo plugin, which cannot be downloaded. Point the `NEXO_JAR` environment variable
+(or `-PnexoJar=<path>`) at a Nexo jar to run them; without it they report `SKIPPED`. CI runs without Nexo
+(`.github/workflows/integration-test.yml`, on pull requests and pushes to `feat/**` and `version/**`) and uploads
+`results.json` and the server logs as artifacts.
 
 ## Releasing
 

@@ -1,0 +1,47 @@
+name: Integration test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - feat/**
+      - version/**
+
+jobs:
+  integration-test:
+    name: Real server scenarios
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6.0.2
+
+      - name: Set up Java 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # Nexo is premium and not available here, so its scenarios report SKIPPED
+      - name: Run the scenarios
+        run: ./gradlew :surf-polar-paper-integration-test:integrationTest --no-daemon
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: surf-polar-paper-integration-test/build/integration-server/plugins/surf-polar-paper-integration-test/results.json
+          if-no-files-found: warn
+
+      - name: Upload server logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-server-logs
+          path: surf-polar-paper-integration-test/build/integration-server/logs/
+          if-no-files-found: warn

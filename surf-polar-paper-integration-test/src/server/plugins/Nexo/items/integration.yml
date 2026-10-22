@@ -1,0 +1,86 @@
+# Furniture for the placement faces the defaults do not cover: fixed transform pieces on a wall, a ceiling and a floor
+it_wall:
+  itemname: Integration Wall Piece
+  material: PAPER
+  Pack:
+    model: nexo:item/nexo_furniture/arm_chair
+  Mechanics:
+    furniture:
+      properties:
+        display_transform: FIXED
+      limited_placing:
+        roof: false
+        floor: false
+        wall: true
+      hitbox:
+        barriers:
+        - 0,0,0
+it_roof:
+  itemname: Integration Roof Piece
+  material: PAPER
+  Pack:
+    model: nexo:item/nexo_furniture/arm_chair
+  Mechanics:
+    furniture:
+      properties:
+        display_transform: FIXED
+      limited_placing:
+        roof: true
+        floor: false
+        wall: false
+      hitbox:
+        barriers:
+        - 0,0,0
+it_floor:
+  itemname: Integration Floor Piece
+  material: PAPER
+  Pack:
+    model: nexo:item/nexo_furniture/arm_chair
+  Mechanics:
+    furniture:
+      properties:
+        display_transform: FIXED
+      limited_placing:
+        roof: false
+        floor: true
+        wall: false
+      hitbox:
+        barriers:
+        - 0,0,0
+it_chair:
+  itemname: Integration Chair
+  material: PAPER
+  Pack:
+    model: nexo:item/nexo_furniture/arm_chair
+  Mechanics:
+    furniture:
+      limited_placing:
+        roof: false
+        floor: true
+        wall: false
+      restricted_rotation: VERY_STRICT
+      hitbox:
+        barriers:
+        - 0,0,0
+      seats:
+      - 0,0,0
+it_chest:
+  itemname: Integration Chest
+  material: PAPER
+  Pack:
+    model: nexo:item/nexo_furniture/storage_chest
+  Mechanics:
+    furniture:
+      rotatable: false
+      limited_placing:
+        roof: false
+        floor: true
+        wall: false
+      restricted_rotation: VERY_STRICT
+      hitbox:
+        barriers:
+        - 0,0,0
+      storage:
+        type: STORAGE
+        rows: 1
+        title: Integration Chest
