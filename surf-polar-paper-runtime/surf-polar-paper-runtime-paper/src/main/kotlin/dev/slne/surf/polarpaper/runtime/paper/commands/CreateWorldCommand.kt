@@ -7,8 +7,8 @@ import dev.jorel.commandapi.kotlindsl.stringArgument
 import dev.jorel.commandapi.kotlindsl.subcommand
 import dev.slne.surf.api.core.messages.adventure.sendText
 import dev.slne.surf.api.paper.command.executors.playerExecutorSuspend
-import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
-import org.bukkit.World
+import dev.slne.surf.polarpaper.core.client.SurfPolarPaperApiImpl
+import kotlinx.coroutines.CancellationException
 import org.bukkit.entity.Player
 import java.util.*
 
@@ -20,23 +20,24 @@ fun CommandAPICommand.createWorldCommand() = subcommand("create") {
     playerExecutorSuspend(commandScope) { player, arguments ->
         val gameModeIdentifier: String by arguments
 
-        createWorld(SurfPolarPaperApi.INSTANCE, player, gameModeIdentifier)
+        createWorld(ownerOrFail(gameModeIdentifier), player, gameModeIdentifier)
     }
 }
 
 internal suspend fun createWorld(
-    api: SurfPolarPaperApi,
+    api: SurfPolarPaperApiImpl,
     player: Player,
     gameModeIdentifier: String
 ) {
-    val world = api.createWorld(
-        worldUuid = UUID.randomUUID(),
-        gameModeIdentifier = gameModeIdentifier,
-        worldBytes = ByteArray(0)
-    )
+    val world = try {
+        api.createWorld(UUID.randomUUID(), gameModeIdentifier)
+    } catch (exception: CancellationException) {
+        throw exception
+    } catch (exception: Exception) {
+        throw CommandAPI.failWithString("Failed to create world for game mode '$gameModeIdentifier': ${exception.message ?: exception::class.simpleName}")
+    }
 
-    val platformWorld = api.getPlatformWorld<World>(world)
-        ?: throw CommandAPI.failWithString("Failed to create world for game mode '$gameModeIdentifier'.")
+    val platformWorld = platformWorldOrFail(world, "Failed to create world for game mode '$gameModeIdentifier'.")
 
     player.teleportAsync(platformWorld.spawnLocation)
 

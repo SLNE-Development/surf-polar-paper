@@ -2,7 +2,6 @@ package dev.slne.surf.polarpaper.core.client
 
 import com.google.errorprone.annotations.OverridingMethodsMustInvokeSuper
 import dev.slne.surf.api.core.util.requiredService
-import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
 import dev.slne.surf.polarpaper.core.client.config.PolarPaperConfig
 import dev.slne.surf.polarpaper.core.client.config.storage.PolarPaperStorageType
 import dev.slne.surf.polarpaper.core.client.lock.DisabledWorldLocks
@@ -12,6 +11,7 @@ import dev.slne.surf.polarpaper.core.client.rabbit.RabbitServices
 import dev.slne.surf.polarpaper.core.client.rabbit.isRabbitMqAvailable
 import dev.slne.surf.polarpaper.core.client.storage.StorageContext
 import dev.slne.surf.polarpaper.core.client.storage.StorageProvider
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -35,7 +35,7 @@ abstract class SurfPolarPaperInstance {
     }
     open val config: PolarPaperConfig get() = configManager.config
 
-    protected open val api: SurfPolarPaperApi get() = SurfPolarPaperApi.INSTANCE
+    protected open val apis: List<SurfPolarPaperApiImpl> get() = ApiInstances.all
 
     var storageProvider: StorageProvider? = null
         private set
@@ -60,11 +60,36 @@ abstract class SurfPolarPaperInstance {
     @OverridingMethodsMustInvokeSuper
     open suspend fun onDisable() {
         try {
-            // Only save: the server discards its worlds when it stops, and worlds with players in them cannot be
-            // unloaded at this point because players are disconnected after plugins are disabled
-            api.saveAllWorlds()
+            // Only saves: the server discards its worlds when it stops, and worlds with players in them cannot be
+            // unloaded at this point. The locks are released by disconnect().
+            closeAllApis()
         } finally {
             disconnect()
+        }
+    }
+
+    /**
+     * Saves and closes every API instance (see [SurfPolarPaperApiImpl.closeForShutdown]) and keeps going when one fails, so a single broken plugin cannot keep the
+     * others from saving. All failures are thrown together afterwards.
+     */
+    private suspend fun closeAllApis() {
+        val instances = apis
+        val failures = mutableListOf<Exception>()
+
+        for (api in instances) {
+            try {
+                api.closeForShutdown()
+            } catch (exception: CancellationException) {
+                throw exception
+            } catch (exception: Exception) {
+                failures += exception
+            }
+        }
+
+        if (failures.isNotEmpty()) {
+            throw IllegalStateException("Failed to close ${failures.size} of ${instances.size} API instances").apply {
+                failures.forEach(::addSuppressed)
+            }
         }
     }
 

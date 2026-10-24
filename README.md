@@ -26,17 +26,168 @@ dependencies {
 }
 ```
 
+Every plugin creates its own API instance. The instance owns the game modes it declares, and only it can load, create,
+save or delete worlds of those game modes. A second plugin that declares an owned game mode fails with a
+`GameModeAlreadyOwnedException`.
+
 ```kotlin
-val api = SurfPolarPaperApi.INSTANCE
+val api = SurfPolarPaperApi.create(this) {
+    gameMode("skyblock") {
+        version = 2
+        migration(RemoveStrawberries)
+    }
+
+    handlers {
+        entities()
+        nexoFurniture()
+        add(MultiblockHandler)
+    }
+
+    autosave(5.minutes)
+}
 
 val world = api.loadWorld(worldUuid, "skyblock")
-val bukkitWorld = api.getPlatformWorld<World>(world)
+val bukkitWorld = world.bukkitWorld
 
 api.saveWorld(world)
 api.unloadWorld(world)
 ```
 
 Loading or creating a world that is loaded on another server throws a `WorldLockedException` naming that server.
+When a plugin is disabled while the server keeps running, its instances are closed: they save and unload their
+worlds, release the world locks and free their game modes. A world that Bukkit refuses to unload (players inside, a
+default world) stays saved, loaded and locked, and loading it again from a new instance throws an
+`IllegalStateException`. When the server stops, worlds are only saved and never unloaded, because Paper has already
+closed its world manager. A closed instance rejects every further call with an `IllegalStateException`.
+
+### Data sections and handlers
+
+A world and each of its chunks hold keyed, typed data sections that are saved with the world. A `DataType` names a
+section and its kotlinx-serialization type. Gameplay code can read and write sections on a loaded chunk or world:
+
+```kotlin
+val Multiblocks = DataType(Key.key("myplugin", "multiblocks"), ListSerializer(Multiblock.serializer()))
+
+// in the settings: data(Multiblocks)
+val blocks = world.chunk(x, z)?.data?.get(Multiblocks)
+world.data[Multiblocks] = listOf(Multiblock(...))
+```
+
+A `ChunkDataHandler` captures plugin state into a section when the world is saved and restores it when the chunk
+loads:
+
+```kotlin
+object MultiblockHandler : ChunkDataHandler<List<Multiblock>> {
+    override val type = Multiblocks
+
+    // Runs on the chunk's owning thread while the world is prepared for saving
+    override fun capture(chunk: Chunk, entities: List<Entity>, claim: (Entity) -> Unit) =
+        MultiblockRegistry.inChunk(chunk).ifEmpty { null }
+
+    // Runs on the tick thread right after the chunk became live
+    override fun restore(chunk: Chunk, value: List<Multiblock>) = MultiblockRegistry.restore(chunk, value)
+}
+```
+
+Entities passed to `claim` are not saved by the entities handler, so furniture is never stored twice. A handler that
+keeps per-chunk state can release it in `chunkUnloaded(world, x, z)`, which is called when a chunk of `world` unloads.
+Chunk hooks (`onChunkLoad`, `onChunkSave` in the settings) run for every chunk.
+
+Built-in handlers, enabled in the `handlers { }` block:
+
+| Settings call      | Section keys                                            | Stores                                                    |
+|--------------------|---------------------------------------------------------|-----------------------------------------------------------|
+| `entities()`       | `surf:entities`, `surf:chunk-pdc`                       | All non-player entities that no handler claimed, and the chunk's persistent data |
+| `nexoFurniture()`  | `nexo:furniture`                                        | Nexo furniture as neutral records (id, position, rotation, properties) |
+| `craftEngine()`    | `craftengine:furniture`                                 | CraftEngine furniture as neutral records (`craftengine:blocks` is a reserved key, nothing is written to it) |
+
+#### CraftEngine and Polar worlds
+
+CraftEngine custom blocks are real block states, so they persist as plain Polar block states (id and properties) and
+need no section. What a Polar world loses is CraftEngine's own per-chunk data:
+
+- CraftEngine block entities (storage or ticking custom blocks) are inert after a load and their data is not persisted.
+- Constant block renderers are lost unless CraftEngine rebuilds its sections from the block states.
+
+CraftEngine configuration:
+
+- Required: `chunk-system.sync-custom-blocks-on-chunk-load: true`. It rebuilds the sections and renderers from the
+  block states on chunk load. It is a global option only. The furniture handler logs a warning when it is off.
+- Recommended: list the Polar worlds in `chunk-system.blacklisted-worlds`, so stale `<world dir>/craftengine/` region
+  data cannot overwrite Polar block states through `restore-custom-blocks-on-chunk-load`.
+
+The records contain no classes of the furniture plugin, so a later migration can still read `nexo:furniture` when Nexo
+is no longer installed.
+
+A world that holds a section no registered type or usable handler accounts for is not loaded, so data is never dropped
+quietly. A handler is usable when its plugin is installed.
+
+### World versions and migrations
+
+Every stored world records its version. The plugin that loads it declares the version it runs, and migration N upgrades
+a world from N-1 to N:
+
+- Stored equals current: the world loads as it is.
+- Stored is greater than current (an older plugin build): the load is refused with a `WorldVersionTooNewException`.
+- Stored is less than current: every step from stored+1 to current is applied in order. A step without a registered
+  migration does nothing and the version moves past it, also for gaps in the middle.
+- A world created without bytes starts at the current version. A template given to `createWorld` can name its own
+  `worldVersion` and is migrated like any loaded world.
+
+A migration has a raw stage and an optional live stage. The raw stage runs on the stored data before Bukkit sees the
+world and should be preferred:
+
+```kotlin
+// Strawberries exist in version 1 and are removed in version 2
+object RemoveStrawberries : WorldMigration(2) {
+    override fun migrateRaw(world: RawWorld) {
+        val minY = world.minSection * 16
+        val maxY = (world.maxSection + 1) * 16 - 1
+
+        for (chunk in world.chunks) {
+            for (x in 0..15) for (z in 0..15) for (y in minY..maxY) {
+                if (chunk.getBlock(x, y, z).startsWith("minecraft:sweet_berry_bush")) {
+                    chunk.setBlock(x, y, z, "minecraft:air")
+                }
+            }
+        }
+    }
+}
+```
+
+A migration that needs live chunks, for example to spawn entities, adds a live stage:
+
+```kotlin
+object ReplaceChairs : WorldMigration(3) {
+    override val hasLiveStage get() = true
+
+    override fun migrateLive(chunk: SurfChunk) {
+        // Runs on the chunk's region thread, after all raw stages of all pending versions
+    }
+}
+```
+
+When several steps are pending, all raw stages run first in version order, then the platform world is created, every
+chunk is force-loaded once (at most 32 at a time) and the live stages run in version order. Worlds without a live stage
+are not force-loaded. Any exception aborts the load with a `WorldMigrationException` naming the version, and the stored
+world stays as it was. After the migrations the world is saved at the new version before it is returned.
+
+### Known limitations
+
+- Polar drops chunks that only contain air when it saves, including their data sections. Data in an all-air chunk is lost.
+- Polar writes the blocks of chunks that unloaded before a save, but knows nothing of their entities and data sections.
+  Those are captured while the chunk unloads (see below) and written by the saves that follow.
+- World user data that is not written by this plugin (Polar's own schematic offset) is dropped on the first save.
+- Chunks that become live after the world loaded (generated ones) are registered when first seen and run no load hook.
+- A chunk save hook must not start a save of the same world: the save lock of a world is not reentrant.
+- When a chunk unloads while its world stays loaded, its entities and sections are captured at that moment and written
+  by every later save, so they survive an unload between two saves. Chunks that unload together with their world, or
+  because the server stops, are not captured: the world is saved before.
+- Plugins that own game modes must `depend` or `softdepend` on Nexo and CraftEngine when they use the furniture
+  handlers, so they are disabled before those plugins: on shutdown the worlds are saved while the owning plugin is
+  disabled, and the furniture entities must still exist then. On Folia the shutdown save is best effort.
+- Polar's own autosave is switched off for these worlds, because it would skip the preparation that captures the
+  handler data. Use the `autosave(...)` setting of the API instance instead.
 
 ## Installing the plugin
 
@@ -45,18 +196,28 @@ Download `surf-polar-paper-runtime-paper-<version>-all.jar` from the
 
 - [polarpaper](https://github.com/MinehubMC/polarpaper)
 - surf-api-paper-server
-- [surf-core-paper](https://github.com/SLNE-Development/surf-core/releases), world locks are held under its server name
+- [surf-core-paper](https://github.com/SLNE-Development/surf-core/releases), optional: world locks are held under its
+  server name (see below for the fallback without it)
 - [CommandAPI](https://commandapi.jorel.dev)
 - [surf-rabbitmq-paper](https://github.com/SLNE-Development/surf-rabbitmq/releases), needed for database storage and
   world locking
+
+### Server name
+
+The server name that world locks are held under is resolved in this order:
+
+1. `SurfCoreApi.getCurrentServerName()`, when the surf-core-paper plugin is installed (the plugin is a soft dependency
+   and none of its classes are loaded without it)
+2. the environment variable `SURF_POLAR_PAPER_SERVER_NAME`
+3. the system property `surf.polarpaper.server-name`
+
+The plugin refuses to enable when none of them gives a name.
 
 ### Configuration
 
 `plugins/surf-polar-paper-runtime-paper/polar-paper.yml`:
 
 ```yaml
-# The game mode this server hosts worlds for.
-game-mode-identifier: default
 storage:
     # DISK, DATABASE or S3. Only the matching section below is used.
     storage-type: S3
@@ -78,6 +239,10 @@ locking:
 ### Commands
 
 All commands need the permission `surf.polarpaper.runtime.command.world`.
+
+`create`, `load`, `unload` and `delete` act through the plugin that owns the game mode, with its handlers and
+migrations, and fail with `No plugin owns game mode '<id>'` when there is none. `list` and `join` work on any loaded or
+stored world.
 
 | Command                                              | Description                                 |
 |------------------------------------------------------|---------------------------------------------|
@@ -122,6 +287,28 @@ Requires Java 25. The microservice tests start PostgreSQL and Valkey with Testco
 ```shell
 ./gradlew build
 ```
+
+### Integration tests
+
+`integrationTest` starts a real Paper 26.3 server and runs the scenarios of the module
+`surf-polar-paper-integration-test`, a Paper plugin that only uses the public API. It is not part of `check` or `build`.
+
+```shell
+./gradlew :surf-polar-paper-integration-test:integrationTest
+```
+
+The task builds the plugin jars, lays out `surf-polar-paper-integration-test/build/integration-server` (disk storage,
+world locking off, `SURF_POLAR_PAPER_SERVER_NAME=integration-test`, no surf-core-paper), downloads the pinned releases
+of polarpaper, CommandAPI, LuckPerms, packetevents and CraftEngine and the surf-api-paper-server jar, and starts the
+server without a console. The scenarios run after startup and write `results.json` in
+`plugins/surf-polar-paper-integration-test/`. The server then stops with a modified world still loaded, and a second
+start checks that this shutdown saved it. The task fails when a scenario failed or the server did not finish within 10
+minutes (`-PserverTimeoutMinutes=<n>` changes that). Scenario results are `PASS`, `FAIL` or `SKIPPED`.
+
+The Nexo scenarios need the premium Nexo plugin, which cannot be downloaded. Point the `NEXO_JAR` environment variable
+(or `-PnexoJar=<path>`) at a Nexo jar to run them; without it they report `SKIPPED`. CI runs without Nexo
+(`.github/workflows/integration-test.yml`, on pull requests and pushes to `feat/**` and `version/**`) and uploads
+`results.json` and the server logs as artifacts.
 
 ## Releasing
 

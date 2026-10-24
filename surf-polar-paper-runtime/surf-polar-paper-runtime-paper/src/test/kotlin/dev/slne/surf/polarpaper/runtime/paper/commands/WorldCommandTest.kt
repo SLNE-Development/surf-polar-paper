@@ -2,9 +2,13 @@ package dev.slne.surf.polarpaper.runtime.paper.commands
 
 import dev.jorel.commandapi.CommandAPIBukkit
 import dev.jorel.commandapi.exceptions.WrapperCommandSyntaxException
-import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
-import dev.slne.surf.polarpaper.api.world.SurfWorld
+import dev.slne.surf.polarpaper.api.settings.polarPaperSettings
 import dev.slne.surf.polarpaper.api.world.WorldInfo
+import dev.slne.surf.polarpaper.core.client.SurfPolarPaperApiImpl
+import dev.slne.surf.polarpaper.core.client.storage.StorageProvider
+import dev.slne.surf.polarpaper.core.client.world.PlatformWorldBridge
+import dev.slne.surf.polarpaper.core.client.world.SurfWorldImpl
+import dev.slne.surf.polarpaper.api.world.SurfWorld
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -12,24 +16,31 @@ import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.unmockkStatic
 import io.mockk.verify
+import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet
 import kotlinx.coroutines.test.runTest
 import org.bukkit.Location
 import org.bukkit.World
 import org.bukkit.entity.Player
 import org.junit.jupiter.api.Assertions.assertEquals
+import org.junit.jupiter.api.Assertions.assertSame
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.assertThrows
 import java.util.*
 
 class WorldCommandTest {
-    private val api = mockk<SurfPolarPaperApi>(relaxed = true)
+    private val api = mockk<SurfPolarPaperApiImpl>(relaxed = true)
     private val player = mockk<Player>(relaxed = true)
     private val uuid = UUID.randomUUID()
-    private val world = SurfWorld(uuid, "survival", ByteArray(0))
     private val spawn = mockk<Location>()
     private val platformWorld = mockk<World> {
         every { spawnLocation } returns spawn
     }
+    private val bridge = mockk<PlatformWorldBridge> {
+        every { bukkitWorld(any()) } returns platformWorld
+    }
+    private val world = SurfWorldImpl(uuid, "survival", 1, api, bridge)
+
+    private val surviving = polarPaperSettings { gameMode("survival") { version = 1 } }
 
     /** Asserts the block fails the way CommandAPI.failWithString does, which players see as a command error. */
     private fun assertCommandFails(block: suspend () -> Unit) = runTest {
@@ -39,7 +50,6 @@ class WorldCommandTest {
     @Test
     fun `join loads the world when needed and teleports to its spawn`() = runTest {
         coEvery { api.loadWorld(uuid, "survival") } returns world
-        every { api.getPlatformWorld<World>(world) } returns platformWorld
 
         joinWorld(api, player, uuid, "survival")
 
@@ -55,6 +65,38 @@ class WorldCommandTest {
     }
 
     @Test
+    fun `join fails with a command error when the platform world is gone`() {
+        coEvery { api.loadWorld(uuid, "survival") } returns world
+        every { bridge.bukkitWorld(any()) } returns null
+
+        assertCommandFails { joinWorld(api, player, uuid, "survival") }
+    }
+
+    @Test
+    fun `join uses the instance that has the world loaded`() {
+        val other = mockk<SurfPolarPaperApiImpl>(relaxed = true) {
+            every { findWorld(uuid, "survival") } returns world
+        }
+        val owner = mockk<SurfPolarPaperApiImpl>(relaxed = true) {
+            every { settings } returns surviving
+            every { findWorld(uuid, "survival") } returns null
+        }
+
+        assertSame(other, apiForJoin(uuid, "survival") { listOf(owner, other) })
+    }
+
+    @Test
+    fun `join falls back to the owner of the game mode`() {
+        val owner = mockk<SurfPolarPaperApiImpl>(relaxed = true) {
+            every { settings } returns surviving
+            every { findWorld(any(), any()) } returns null
+        }
+
+        assertSame(owner, apiForJoin(uuid, "survival") { listOf(owner) })
+        assertThrows<WrapperCommandSyntaxException> { apiForJoin(uuid, "unowned") { listOf(owner) } }
+    }
+
+    @Test
     fun `load reports a command error instead of throwing the raw exception`() {
         coEvery { api.loadWorld(uuid, "survival") } throws IllegalStateException("does not exist")
 
@@ -65,16 +107,17 @@ class WorldCommandTest {
     fun `delete also deletes worlds that are not loaded`() = runTest {
         every { api.findWorld(uuid, "survival") } returns null
 
-        deleteWorld(api, player, uuid, "survival")
+        deleteWorld(api, player, uuid, "survival", bridge)
 
-        coVerify { api.deleteWorld(SurfWorld(uuid, "survival", ByteArray(0))) }
+        // Worlds are equal by uuid and game mode
+        coVerify { api.deleteWorld(world) }
     }
 
     @Test
     fun `delete uses the loaded world when there is one`() = runTest {
         every { api.findWorld(uuid, "survival") } returns world
 
-        deleteWorld(api, player, uuid, "survival")
+        deleteWorld(api, player, uuid, "survival", bridge)
 
         coVerify { api.deleteWorld(world) }
     }
@@ -97,14 +140,42 @@ class WorldCommandTest {
     }
 
     @Test
-    fun `list shows all stored worlds unless only loaded worlds are requested`() = runTest {
-        coEvery { api.listWorlds(any(), any()) } returns listOf(WorldInfo(uuid, "survival"))
+    fun `list asks the owner of the game mode`() = runTest {
+        val owner = mockk<SurfPolarPaperApiImpl> {
+            every { settings } returns surviving
+            coEvery { listWorlds(any(), any()) } returns listOf(WorldInfo(uuid, "survival"))
+        }
 
-        worldsToList(api, "survival", showLoadedOnly = null)
-        worldsToList(api, "survival", showLoadedOnly = true)
+        worldsToList("survival", showLoadedOnly = null, instances = listOf(owner))
+        worldsToList("survival", showLoadedOnly = true, instances = listOf(owner))
 
-        coVerify(exactly = 1) { api.listWorlds("survival", false) }
-        coVerify(exactly = 1) { api.listWorlds("survival", true) }
+        coVerify(exactly = 1) { owner.listWorlds("survival", false) }
+        coVerify(exactly = 1) { owner.listWorlds("survival", true) }
+    }
+
+    @Test
+    fun `list reads the storage for a game mode nobody owns`() = runTest {
+        val storage = mockk<StorageProvider> {
+            coEvery { listWorlds("legacy") } returns listOf(WorldInfo(uuid, "legacy"))
+        }
+        val other = mockk<SurfPolarPaperApiImpl> { every { settings } returns surviving }
+
+        val worlds = worldsToList("legacy", showLoadedOnly = null, instances = listOf(other), storage = { storage })
+
+        assertEquals(listOf(WorldInfo(uuid, "legacy")), worlds)
+    }
+
+    @Test
+    fun `list shows the loaded worlds of every instance for a game mode nobody owns`() = runTest {
+        val legacy = SurfWorldImpl(uuid, "legacy", 1, api, bridge)
+        val one = mockk<SurfPolarPaperApiImpl> {
+            every { settings } returns surviving
+            every { loadedWorlds } returns ObjectOpenHashSet<SurfWorld>(listOf(legacy, world))
+        }
+
+        val worlds = worldsToList("legacy", showLoadedOnly = true, instances = listOf(one), storage = { null })
+
+        assertEquals(listOf(WorldInfo(uuid, "legacy")), worlds)
     }
 
     @Test
@@ -114,12 +185,23 @@ class WorldCommandTest {
 
     @Test
     fun `create teleports to the new world`() = runTest {
-        coEvery { api.createWorld(any(), "survival", any()) } returns world
-        every { api.getPlatformWorld<World>(world) } returns platformWorld
+        coEvery { api.createWorld(any(), "survival", any(), any()) } returns world
 
         createWorld(api, player, "survival")
 
         verify { player.teleportAsync(spawn) }
+    }
+
+    @Test
+    fun `commands refuse game modes without an owner`() {
+        val exception = assertThrows<WrapperCommandSyntaxException> { ownerOrFail("skyblock") { null } }
+
+        assertEquals("No plugin owns game mode 'skyblock'", exception.message)
+    }
+
+    @Test
+    fun `the owner of a game mode is used by the commands`() {
+        assertSame(api, ownerOrFail("skyblock") { api })
     }
 
     @Test

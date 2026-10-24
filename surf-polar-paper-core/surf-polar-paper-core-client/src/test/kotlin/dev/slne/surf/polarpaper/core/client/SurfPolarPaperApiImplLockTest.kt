@@ -1,14 +1,18 @@
 package dev.slne.surf.polarpaper.core.client
 
-import dev.slne.surf.polarpaper.api.world.SurfWorld
+import dev.slne.surf.polarpaper.api.settings.polarPaperSettings
 import dev.slne.surf.polarpaper.api.world.WorldLockedException
 import dev.slne.surf.polarpaper.core.client.fakes.FakePlatformWorldBridge
 import dev.slne.surf.polarpaper.core.client.fakes.FakeWorldLockService
 import dev.slne.surf.polarpaper.core.client.fakes.InMemoryStorageProvider
 import dev.slne.surf.polarpaper.core.client.lock.RemoteWorldLocks
 import dev.slne.surf.polarpaper.core.client.utils.WorldStorageCodec
+import dev.slne.surf.polarpaper.core.client.world.SurfWorldImpl
 import dev.slne.surf.polarpaper.core.common.world.WorldCacheKey
+import io.mockk.every
+import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
+import org.bukkit.plugin.Plugin
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
 import org.junit.jupiter.api.Assertions.assertNull
@@ -22,13 +26,20 @@ class SurfPolarPaperApiImplLockTest {
     private val bridge = FakePlatformWorldBridge()
     private val lockService = FakeWorldLockService()
     private val locks = RemoteWorldLocks("lobby-1", lockService)
-    private val api = SurfPolarPaperApiImpl({ storage }, { bridge }, { locks })
+    private val plugin = mockk<Plugin> { every { name } returns "TestPlugin" }
+    private val api = SurfPolarPaperApiImpl(
+        plugin,
+        polarPaperSettings { gameMode("survival") { version = 1 } },
+        { storage },
+        { bridge },
+        { locks }
+    )
 
     private val uuid = UUID.randomUUID()
     private val key = WorldCacheKey(uuid, "survival")
 
     private fun store(worldBytes: ByteArray = byteArrayOf(1)) {
-        storage.stored[key] = WorldStorageCodec.encode(worldBytes)
+        storage.stored[key] = WorldStorageCodec.encode(1, worldBytes)
     }
 
     @Test
@@ -75,7 +86,7 @@ class SurfPolarPaperApiImplLockTest {
 
     @Test
     fun `creating a world locks it`() = runTest {
-        api.createWorld(uuid, "survival", byteArrayOf(1))
+        api.createWorld(uuid, "survival")
 
         assertEquals("lobby-1", lockService.owners[key])
     }
@@ -90,14 +101,14 @@ class SurfPolarPaperApiImplLockTest {
 
         assertThrows<IllegalStateException> { api.saveWorld(world) }
 
-        assertEquals(1, WorldStorageCodec.decode(storage.stored.getValue(key)).single().toInt())
+        assertEquals(1, WorldStorageCodec.decode(storage.stored.getValue(key)).worldBytes.single().toInt())
     }
 
     @Test
     fun `deleting a world that is not loaded locks it for the deletion`() = runTest {
         store()
 
-        api.deleteWorld(SurfWorld(uuid, "survival", ByteArray(0)))
+        api.deleteWorld(SurfWorldImpl(uuid, "survival", 0, api, bridge))
 
         assertTrue(storage.stored.isEmpty())
         assertTrue(lockService.owners.isEmpty())
@@ -108,7 +119,7 @@ class SurfPolarPaperApiImplLockTest {
         store()
         lockService.owners[key] = "lobby-2"
 
-        assertThrows<WorldLockedException> { api.deleteWorld(SurfWorld(uuid, "survival", ByteArray(0))) }
+        assertThrows<WorldLockedException> { api.deleteWorld(SurfWorldImpl(uuid, "survival", 0, api, bridge)) }
 
         assertTrue(key in storage.stored)
         assertEquals("lobby-2", lockService.owners[key])

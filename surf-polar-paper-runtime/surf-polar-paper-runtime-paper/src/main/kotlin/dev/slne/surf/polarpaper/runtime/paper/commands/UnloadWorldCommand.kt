@@ -8,7 +8,7 @@ import dev.jorel.commandapi.kotlindsl.subcommand
 import dev.jorel.commandapi.kotlindsl.uuidArgument
 import dev.slne.surf.api.core.messages.adventure.sendText
 import dev.slne.surf.api.paper.command.executors.playerExecutorSuspend
-import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
+import dev.slne.surf.polarpaper.core.client.SurfPolarPaperApiImpl
 import org.bukkit.entity.Player
 import java.util.*
 
@@ -22,12 +22,12 @@ fun CommandAPICommand.unloadWorldCommand() = subcommand("unload") {
         val gameModeIdentifier: String by arguments
         val worldUuid: UUID by arguments
 
-        unloadWorld(SurfPolarPaperApi.INSTANCE, player, worldUuid, gameModeIdentifier)
+        unloadWorld(ownerOrFail(gameModeIdentifier), player, worldUuid, gameModeIdentifier)
     }
 }
 
 internal suspend fun unloadWorld(
-    api: SurfPolarPaperApi,
+    api: SurfPolarPaperApiImpl,
     player: Player,
     worldUuid: UUID,
     gameModeIdentifier: String

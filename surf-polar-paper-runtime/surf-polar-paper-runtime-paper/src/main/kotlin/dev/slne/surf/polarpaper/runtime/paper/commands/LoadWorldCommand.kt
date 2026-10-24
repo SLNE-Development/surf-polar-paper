@@ -8,7 +8,7 @@ import dev.jorel.commandapi.kotlindsl.subcommand
 import dev.jorel.commandapi.kotlindsl.uuidArgument
 import dev.slne.surf.api.core.messages.adventure.sendText
 import dev.slne.surf.api.paper.command.executors.playerExecutorSuspend
-import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
+import dev.slne.surf.polarpaper.core.client.SurfPolarPaperApiImpl
 import dev.slne.surf.polarpaper.api.world.SurfWorld
 import kotlinx.coroutines.CancellationException
 import org.bukkit.entity.Player
@@ -24,12 +24,12 @@ fun CommandAPICommand.loadWorldCommand() = subcommand("load") {
         val gameModeIdentifier: String by arguments
         val worldUuid: UUID by arguments
 
-        loadWorld(SurfPolarPaperApi.INSTANCE, player, worldUuid, gameModeIdentifier)
+        loadWorld(ownerOrFail(gameModeIdentifier), player, worldUuid, gameModeIdentifier)
     }
 }
 
 internal suspend fun loadWorld(
-    api: SurfPolarPaperApi,
+    api: SurfPolarPaperApiImpl,
     player: Player,
     worldUuid: UUID,
     gameModeIdentifier: String
@@ -44,7 +44,7 @@ internal suspend fun loadWorld(
 }
 
 internal suspend fun loadWorldOrFail(
-    api: SurfPolarPaperApi,
+    api: SurfPolarPaperApiImpl,
     worldUuid: UUID,
     gameModeIdentifier: String
 ): SurfWorld = try {

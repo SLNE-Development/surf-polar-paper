@@ -1,60 +1,37 @@
 package dev.slne.surf.polarpaper.api.world
 
-import dev.slne.surf.api.core.messages.adventure.buildText
-import dev.slne.surf.api.core.serializer.java.uuid.SerializableUUID
 import dev.slne.surf.polarpaper.api.SurfPolarPaperApi
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.Transient
-import net.kyori.adventure.text.Component
+import dev.slne.surf.polarpaper.api.data.DataSections
 import net.kyori.adventure.text.ComponentLike
+import org.bukkit.World
+import java.util.*
 
 /**
- * A world identified by its [uuid] and [gameModeIdentifier]. Two worlds are equal when both match,
- * regardless of their current [worldBytes].
+ * A world identified by its [uuid] and [gameModeIdentifier]. Two worlds are equal when both match.
  */
-@Serializable
-data class SurfWorld(
-    val uuid: SerializableUUID,
-    val gameModeIdentifier: String,
-    var worldBytes: ByteArray
-) : ComponentLike {
-    val name get() = uuid.toString()
+interface SurfWorld : ComponentLike {
+    val uuid: UUID
+    val gameModeIdentifier: String
+    val name: String
 
-    @Transient
-    private val displayName = buildText {
-        variableValue("$gameModeIdentifier-$uuid")
-    }
+    /** The version the world was last migrated to. */
+    val version: Int
 
-    suspend fun save() {
-        SurfPolarPaperApi.saveWorld(this)
-    }
+    /** The API instance that owns this world. */
+    val api: SurfPolarPaperApi
 
-    suspend fun delete() {
-        SurfPolarPaperApi.deleteWorld(this)
-    }
+    /** @throws IllegalStateException if the world is not loaded */
+    val bukkitWorld: World
 
-    fun <W> platformWorld(): W? {
-        return SurfPolarPaperApi.getPlatformWorld(this)
-    }
+    /** World-level data sections. */
+    val data: DataSections
 
-    fun info() = WorldInfo(uuid, gameModeIdentifier)
+    /** The live chunk at [x], [z], or null when it is not loaded. */
+    fun chunk(x: Int, z: Int): SurfChunk?
 
-    override fun toString(): String {
-        return "SurfWorld(uuid=$uuid, gameModeIdentifier='$gameModeIdentifier', worldBytes=${worldBytes.size} bytes)"
-    }
+    suspend fun save()
+    suspend fun unload(saveChanges: Boolean = true)
+    suspend fun delete()
 
-    override fun asComponent(): Component {
-        return displayName
-    }
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (other !is SurfWorld) return false
-
-        return uuid == other.uuid && gameModeIdentifier == other.gameModeIdentifier
-    }
-
-    override fun hashCode(): Int {
-        return 31 * uuid.hashCode() + gameModeIdentifier.hashCode()
-    }
+    fun info(): WorldInfo
 }

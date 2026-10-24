@@ -1,0 +1,7 @@
+# Only what the scenarios need. CraftEngine fills in its defaults for everything else.
+chunk-system:
+  # Rebuilds CraftEngine's sections and renderers from the block states when a Polar chunk loads
+  sync-custom-blocks-on-chunk-load: true
+  # Worlds are named by their uuid, so a uuid pattern covers every Polar world
+  blacklisted-worlds:
+    - '.*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'

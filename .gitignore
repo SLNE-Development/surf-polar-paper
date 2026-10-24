@@ -43,3 +43,5 @@ bin/
 
 **/run/
 .env
+# Local plugin jars for integration tests, e.g. the premium Nexo jar passed via NEXO_JAR
+docs/*.jar
